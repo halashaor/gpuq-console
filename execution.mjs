@@ -53,6 +53,9 @@ export function installExecution(service,bridge){
               // LOST/unknown remains nonterminal: retain quota until confirmed.
               schedulerResult(current,result);
               service.save();
+              // Bodies live outside portal_state/audit. Delete only after a
+              // confirmed terminal result has been persisted by reconciliation.
+              service.pruneTaskNotes?.();
             });
           }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&(current.policyRevision||0)===policyRevision){current.error=String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();}});}
         }
@@ -251,7 +254,7 @@ export async function executionCall(service,principal,operation,args){
     try{
       const result=await service.bridge(job.machine,'priority',{job:job.spec,priority,rankOnly:true,expected:job.schedulerPolicy});
       job.policyRevision++;
-      schedulerResult(job,result);service.save();return publicJob(job);
+      schedulerResult(job,result);service.save();service.pruneTaskNotes?.();return publicJob(job);
     }catch(error){
       job.policyRevision++;
       job.priorityMutable=false;job.error='优先级调整结果待核验，请刷新；不会重复提交任务。';service.save();
