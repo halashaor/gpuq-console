@@ -23,6 +23,7 @@ guides['/guide/community']='./docs/COMMUNITY.md';
 guides['/guide/project-network']='./docs/PROJECT_NETWORK.md';
 guides['/guide/sync']='./docs/SYNC.md';
 export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,bridge,notificationConfigPath}){
+  await standaloneClient();
   const url=new URL(origin);const notificationConfig=await loadTelegramNotifications(notificationConfigPath);
   const service=await PortalService.open(database,bootstrap,statusPath,bridge||(bridgeSocket?bridgeClient(bridgeSocket):undefined),notificationConfig);const rate=new Map();
   const server=http.createServer(async(req,res)=>{
