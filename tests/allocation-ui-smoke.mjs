@@ -6,7 +6,7 @@ import {chromium} from 'playwright';
 import {MACHINES} from '../dist/machines.js';
 const machine=MACHINES[0].id,calls=[],errors=[],principal={userId:'alice',username:'alice',role:'member'};
 let capable=true,browser,server;
-const state=()=>({machines:MACHINES,users:[{id:'alice',username:'alice',role:'member',enabled:true,total:4,limits:{[machine]:4}}],jobs:[],executionEnabled:true,execution:{priorityCapabilities:{[machine]:true}},gpuq:{stale:false,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:[],gpuq:{connected:true,jobs:[],capabilities:capable?['console-yield-v1','console-elastic-v1']:[]}}))}});
+const state=()=>({machines:MACHINES,users:[{id:'alice',username:'alice',role:'member',enabled:true,total:4,limits:{[machine]:4}}],jobs:[],executionEnabled:true,execution:{priorityCapabilities:{[machine]:true}},gpuq:{stale:false,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:[],gpuq:{connected:true,jobs:[],capabilities:capable?['console-yield-v1','console-elastic-v1','console-placement-v1','console-sharing-v1','console-hami-v1','console-hami-sm-v1']:[]}}))}});
 try{
   server=createServer(async(req,res)=>{const name=new URL(req.url,'http://localhost').pathname.slice(1)||'index.html';if(!/^(index\.html|[a-z-]+\.(js|css))$/.test(name)){res.writeHead(404);res.end();return;}try{let content=await readFile(new URL('../dist/'+name,import.meta.url));if(name==='index.html')content=content.toString().replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;globalThis.GPUQ_PRODUCTION=true;');res.writeHead(200,{'Content-Type':name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});res.end(content);}catch{res.writeHead(404);res.end();}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
@@ -33,6 +33,16 @@ try{
   const expanded=page.waitForResponse(r=>r.url()===origin+'/api/call'&&r.request().postDataJSON()?.operation==='jobs.submit');
   await page.locator('#train-form [type=submit]').click();await expanded;
   assert.deepEqual(calls.filter(x=>x.operation==='jobs.submit').at(-1).args.elastic,{minCards:1,globalBatch:256,microBatch:8,autoExpand:true});
+  await page.locator('[name=elastic]').uncheck();await page.locator('[name=custom-policy]').uncheck();
+  await page.locator('[name=gpu-placement]').evaluate(el=>{el.closest('details').open=true;});
+  await page.locator('[name=gpu-placement]').selectOption('shared');
+  await page.locator('[name=cards]').fill('1');await page.locator('[name=gpu-indices]').fill('3');
+  await page.locator('[name=vram-mib]').fill('4096');await page.locator('[name=hami]').check();
+  await page.locator('[name=sm-percent]').fill('50');
+  const shared=page.waitForResponse(r=>r.url()===origin+'/api/call'&&r.request().postDataJSON()?.operation==='jobs.submit');
+  await page.locator('#train-form [type=submit]').click();await shared;
+  assert.deepEqual(calls.filter(x=>x.operation==='jobs.submit').at(-1).args.placement,{gpuIndices:[3],shared:true,vramMiB:4096,hami:true,smPercent:50});
+  await page.locator('[name=custom-policy]').check();
   capable=false;await page.locator('#refresh-state').click();await page.waitForFunction(()=>document.querySelector('#custom-policy-note').textContent.includes('尚未确认'));
   assert.equal(await page.locator('[name=custom-policy]').isChecked(),true);assert.equal(await page.locator('[name=queue-rank]').inputValue(),'P1');assert.equal(await page.locator('#train-form [type=submit]').isDisabled(),true);
   await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));

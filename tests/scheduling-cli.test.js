@@ -23,7 +23,15 @@ test('standalone downloaded CLI sends canonical scheduling and preserves argv af
   assert.equal(submit.key,key);assert.equal(Object.hasOwn(submit,'priority'),false);
   assert.deepEqual(submit.argv,['python','train.py','--rank','123']);
   assert.equal((await run(args)).code,0);assert.equal(calls.filter(x=>x.operation==='jobs.submit').at(-1).args.key,key);
+  assert.equal((await run(['run','--gpu','0,2','--','python','train.py'])).code,0);
+  let allocation=calls.filter(x=>x.operation==='jobs.submit').at(-1).args;
+  assert.equal(allocation.cards,2);assert.deepEqual(allocation.placement,{gpuIndices:[0,2],shared:false,hami:false});
+  assert.equal((await run(['run','--gpu','3','--share','--vram-mib','4096','--hami','--sm-percent','50','--','python','small.py'])).code,0);
+  allocation=calls.filter(x=>x.operation==='jobs.submit').at(-1).args;
+  assert.equal(allocation.cards,1);assert.deepEqual(allocation.placement,{gpuIndices:[3],shared:true,vramMiB:4096,hami:true,smPercent:50});
+  assert.equal((await run(['run','-g','8','--min-cards','1','--global-batch','256','--micro-batch','8','--','python','train.py'])).code,0);
+  assert.deepEqual(calls.filter(x=>x.operation==='jobs.submit').at(-1).args.elastic,{minCards:1,globalBatch:256,microBatch:8,autoExpand:false});
   const count=calls.length;
-  for(const invalid of [['jobs','--rank','P1'],['run','--yield','save','--','python'],['run','--yield','now','--restart-policy','on-preempt','--','python'],['run','--rank','P1','--priority','idle','--','python']])assert.notEqual((await run(invalid)).code,0);
+  for(const invalid of [['jobs','--gpu','3'],['jobs','--auto-expand'],['jobs','--rank','P1'],['run','--yield','save','--','python'],['run','--yield','now','--restart-policy','on-preempt','--','python'],['run','--rank','P1','--priority','idle','--','python']])assert.notEqual((await run(invalid)).code,0);
   assert.equal(calls.length,count,'invalid options fail before any request');
 });
