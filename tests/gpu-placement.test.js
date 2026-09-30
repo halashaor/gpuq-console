@@ -38,7 +38,7 @@ test('pinned target and sharing budget change immutable submit identity',()=>{
 test('portal accepts explicit one-sided sharing and rejects unavailable fixed cards/runtime before quota reservation',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'gpuq-placement-test-')),bootstrap=join(dir,'bootstrap'),status=join(dir,'status'),password=randomUUID()+randomUUID();
   await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
-  await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768,memoryUsedMiB:8192,processes:[{pid:123,memoryUsedMiB:8192}]})),gpuq:{connected:true,observeOnly:false,capabilities:['priority-policy-v1','preempt-idle-only-v1','console-placement-v1','console-sharing-v1'],jobs:[]}}))}));
+  await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768,memoryUsedMiB:8192,processes:[{pid:123,memoryUsedMiB:8192}]})),gpuq:{connected:true,observeOnly:false,capabilities:['priority-policy-v1','preempt-idle-only-v1','preempt-opt-in-only-v1','console-yield-v1','console-placement-v1','console-sharing-v1'],jobs:[]}}))}));
   const calls=[],s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{calls.push({machine,operation,args});return {state:'PENDING',assignedIndices:[]};});clearInterval(s.executionTimer);
   const settle=async()=>{await new Promise(r=>setImmediate(r));while(s.reconciling)await new Promise(r=>setTimeout(r,2));};
   t.after(async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});});
@@ -49,4 +49,11 @@ test('portal accepts explicit one-sided sharing and rejects unavailable fixed ca
   assert.deepEqual(calls[0].args.job.placement,{gpuIndices:[3],shared:true,vramMiB:4096,hami:false});
   for(const placement of [{gpuIndices:[100],shared:false},{gpuIndices:[3],shared:true,vramMiB:50000},{gpuIndices:[3],shared:true,vramMiB:4096,hami:true}])await assert.rejects(submit({key:randomUUID(),placement}),e=>[409,503].includes(e.status));
   assert.equal(s.store.jobs.length,1);
+  const count=calls.length;
+  for(const mode of ['preempt1','preempt2','preempt-save','preempt-now']){
+    await assert.rejects(submit({key:randomUUID(),scheduling:{rank:'P1',yieldPolicy:'never',restartPolicy:'never',checkpointable:false,mode}}),e=>e.status===400&&/普通排队/.test(e.message));
+    assert.equal(s.store.jobs.length,1,'invalid shared/requester mode rejected before card reservation');assert.equal(calls.length,count,'invalid mixed contract never reaches node');
+  }
+  const fixed=await submit({key:randomUUID(),placement:{gpuIndices:[1],shared:false},scheduling:{rank:'P1',yieldPolicy:'never',restartPolicy:'never',checkpointable:false,mode:'preempt2'}});
+  await settle();assert.equal(s.store.jobs.length,2);assert.equal(s.store.jobs[1].spec.scheduling.mode,'preempt-now');assert.deepEqual(s.store.jobs[1].spec.placement,{gpuIndices:[1],shared:false});
 });
