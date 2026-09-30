@@ -1,5 +1,7 @@
 # 测试与发布检查
 
+新增调度、弹性、共享、同步与多机选机需按当前提交单独验收。下文带日期的 GPU 实测是历史记录，不证明本次组合版本已上线或已通过 CUDA/NCCL、真实 LAN 与长期负载测试。
+
 可选的真实训练适配器测试：在已安装 PyTorch 和 NumPy 的本地环境运行
 `python3 tests/elastic-ddp-smoke.py`。只用 CPU/Gloo 和临时目录，不提交 GPUQ
 任务、不连接服务器。覆盖 1→3 与 2→3 rank 扩容：global batch=12、micro batch=2，
@@ -21,6 +23,9 @@ node tests/datasets-ui-smoke.mjs
 node tests/projects-ui-smoke.mjs
 node tests/priority-ui-smoke.mjs
 node tests/client-auth-smoke.mjs
+node tests/task-notes-ui-smoke.mjs
+node tests/allocation-ui-smoke.mjs
+node tests/portal-fleet-ui-smoke.mjs
 python3 scripts/build-gpuq.py
 python3 build/gpuq.pyz --help
 python3 -m compileall -q deploy gpuq scripts
@@ -30,7 +35,7 @@ docker build -f deploy/Dockerfile -t gpuq-console:test .
 
 覆盖账号/中文名、密码和会话、邀请码、角色、乐观授权写入、并发配额、幂等提交、超时保留、所有权、root 拒绝、API/CLI、上传越界/软链接、部署清单验证。不访问生产节点、不使用真实账号密码，不因 PR 启动真实训练。
 
-浏览器测试启动临时本地后台和独立数据库，验证注册自动登录、初始零额度、管理员自动发现待处理用户、授权后用户自动更新、编辑草稿不被刷新覆盖、注册码再次可读、引导 admin 退役与移动端布局。不会连接真实执行桥或 GPU；可选 `CHROME_PATH` 使用本地 Chrome，`UI_SCREENSHOTS` 指定私有截图目录。
+真实 Portal 浏览器测试启动临时本地后台和独立数据库，验证 Cookie 登录与实际静态资源交付。`tests/static-modules.test.js` 另外从真实 app import 图检查 Portal/demo 的模块响应与公开边界，不能用“直接提供全部 dist 文件”的测试服务器替代。`allocation-ui-smoke`、`portal-fleet-ui-smoke` 使用合成 API，只证明表单、草稿与布局契约，不证明真实 Portal 已完整交付或 GPU 已运行。所有本地流程不连接生产执行桥或 GPU；可选 `CHROME_PATH` 使用本地 Chrome，`UI_SCREENSHOTS` 指定私有截图目录。
 
 数据集回归另覆盖固定版本、身份/机器授权、准备不预留显卡、只选择同机全部 READY 的副本、失败重试与断点继续、租约清理的保守边界、挂载缺失拒绝写系统盘、旧节点环境/管理员终端兼容升级。数据页浏览器测试使用假的执行桥，不触发真实训练；验证准备、失败、重试、READY 后填入训练，以及移动端和在线手册入口。
 
@@ -38,7 +43,7 @@ docker build -f deploy/Dockerfile -t gpuq-console:test .
 
 逐卡监控的回归范围包括指标与计算进程解析、空列表和采集失败的区分、非法/缺失指标、过期快照、角色脱敏、未授权机器过滤、管理员原 GPUQ 队列展开及网页展示。普通用户 API 响应不得包含他人的程序、系统用户名、命令、项目路径或原 GPUQ 队列；不能只依赖界面隐藏。进程指标仅代表 CUDA 计算进程，不把图形进程缺席当作漏报结论。
 
-优先级界面回归使用本机静态资源与合成 API 响应，不连接真实执行桥。覆盖普通用户只有 normal/idle、未知节点能力禁止增强档位但保留训练草稿、管理员仅修改已确认队列、轮询保留优先级草稿及焦点、原优先级并发冲突、真实抢占标记、未知字段不冒充已知，以及 390px 布局。该浏览器测试只验证界面契约；后端权限、GPUQ 排序与让位策略须由独立单元测试和隔离节点验收覆盖，不能将合成响应当作实机通过。
+优先级界面回归使用本机静态资源与合成 API 响应，不连接真实执行桥。覆盖普通用户旧 normal/idle 及自定义 P0–P2、管理员排队修改 P0–P4 时不绑定让位确认框、未知能力阻止增强策略但保留草稿、轮询保留档位及焦点、并发冲突、抢占标记与 390px 布局。后端另用真实临时 SQLite 与延迟 bridge 验证：旧 fixed/auto 核对不能覆盖新的 rank 或取消意图；取消 save/audit 失败必须还原对象、状态和额度，重开数据库仍一致。合成响应不代表实机通过。
 
 ## 上线前的实机验收
 
@@ -64,7 +69,7 @@ docker build -f deploy/Dockerfile -t gpuq-console:test .
 
 非交互管理员命令需在显式启用 hostRoot 的测试节点验证：普通用户/其他管理员不可读取或取消该句柄；argv 无隐式 shell；同键重试不重复执行；超时和取消待整个命令控制组清空；stdout/stderr 截断标记、退出码与断网后状态核对一致。不要用真实维护脚本验证该入口，先使用无副作用的短命令和独立可取消进程。
 
-## 2026-09-29 已有部署验收范围
+## 历史记录：2026-09-29 已有部署验收范围
 
 已在真实账号上完成普通注册→零权限→审批→CLI→个人终端/环境→单卡 CUDA→双卡 NCCL→下载→运行中取消→管理员→四台主机 root→退出。测试工作负载结束。公开仓库不包含此部署的账号、地址、任务日志、数据库或结果文件。
 
@@ -78,12 +83,12 @@ docker build -f deploy/Dockerfile -t gpuq-console:test .
 
 以上不包含实际断电重启、TB 规模吞吐、来源断网、所有机型数据作业或长期负载验收。Slurm 适配器的自动测试及隔离编译成功不代表生产已切换 Slurm/Pyxis。
 
-## 2026-09-29 项目隔离增量验收
+## 历史记录：2026-09-29 项目隔离增量验收
 
-新版门户和四台节点已部署，原节点配置、GPUQ 数据库和旧训练未迁移或重启。本地 118 项 Node、321 项 Python 回归通过；项目、数据集、账号/资源、原生 HttpOnly Cookie 并发四组真实浏览器回归通过。浏览器测试使用本地模拟执行桥，不冒充真实 GPU 验收。
+该次门户和四台节点部署保留了原节点配置、GPUQ 数据库和旧训练，未迁移或重启。当次本地 118 项 Node、321 项 Python 回归通过；项目、数据集、账号/资源、原生 HttpOnly Cookie 并发四组真实浏览器回归通过。浏览器测试使用本地模拟执行桥，不冒充真实 GPU 验收。
 
 四节点均以专用验收项目验证：完整 SHA256 上传、CPU 开发终端创建独立 venv、正常退出、代码与环境发布 READY。随后在一台空闲 RTX 3090 上，通过正式站下载的 CLI 和真实账号完成上传极小自建 wheel、在项目 venv 离线 pip 安装、重新发布、自动分配恰好一张 GPU、运行 CUDA、只读 code/env 写入收到 EROFS、下载任务独立 result.json。发布后的训练成功导入刚安装的依赖；计算结果与固定版本均核验一致。
 
 正式网页另核对服务器/项目选择和 390px 布局；全体用户角色、启用状态和额度的指纹前后一致。测试作业 SUCCEEDED，未取消其他任务或使用忙碌节点显卡。旧工作区、幂等记录和取消协议兼容通过回归；本轮没有重新开展项目运行中取消、双卡 NCCL、节点重启或大型数据压力实测。
 
-上述证明当前 GPUQ 后端上的同机项目工作流，不包括 Slurm/Pyxis/Enroot、硬磁盘配额、自动跨机项目/环境分发、结果自动归档或独立内容备份。私人验收日志、账号与主机清单不进入公开仓库。
+上述记录证明当时 GPUQ 后端上的同机项目工作流，不包括本次新增的抢占/弹性/共享/同步/多机选机，也不包括 Slurm/Pyxis/Enroot、硬磁盘配额、结果自动归档或独立内容备份。私人验收日志、账号与主机清单不进入公开仓库。

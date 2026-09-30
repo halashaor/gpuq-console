@@ -48,6 +48,6 @@ gpuctl sync data 源数据集名称@完整64位版本 --from gpu-1 --to gpu-2 --
 
 ## 部署与回退
 
-节点安装流程新增 `snapshot-sync.py`，需要匹配版本的 `node-executor.py`、`project-ops.py`、既有 `dataset-cache.py`/`dataset-upload.py`；VPS 的 `execution-worker.py` 需允许新 RPC，Portal 镜像需包含 `snapshot-sync.mjs`。先升级节点和执行桥，再发布门户/客户端。`upgrade-projects.py` 只升级其原有项目功能，不足以单独开启本功能。
+节点安装器、项目/数据升级器共用 `deploy/node-runtime.json`，一起安装包含 `snapshot-sync.py`、`scheduling-policy.py` 和训练控制通道的匹配依赖，按原 common-p0/ray-p0 profile 保留运行方式。VPS 执行桥须允许新 RPC，Portal 镜像须包含 `snapshot-sync.mjs` 与正常构建的单文件客户端。先按节点流程升级运行时和执行桥，再发布门户/客户端；不能只手工复制单个执行器文件。
 
 维护者按已有节点安装/升级流程备份配置、项目与状态目录后手动发布；无需迁移 GPUQ schema。回退不删除项目、数据、同步清单或未完成上传。存在未完成代码同步时应先完成或由维护者处理其明确项目范围，不能通过回退旧 `project-ops.py` 绕过同步锁。
