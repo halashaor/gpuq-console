@@ -31,11 +31,16 @@ export function installFleetRouting(service,{schedulerResult,priorityCapable,usa
   });}
   async function reconcileBound(job){
     const route=structuredClone(job.routing),spec=structuredClone(job.spec),accepted=route.accepted===true;
+    const policyRevision=job.policyRevision||0,cancelRequested=job.cancelRequested===true;
+    // Rank edits and cancellation are newer decisions than an in-flight sync.
+    // An unconfirmed admit still must resolve its receipt after cancellation.
+    const applicable=current=>current.routing?.admissionKey===route.admissionKey&&!terminal.has(current.state)&&
+      (current.policyRevision||0)===policyRevision&&(!accepted||(current.cancelRequested===true)===cancelRequested);
     const operation=accepted?(job.cancelRequested?'cancel':'sync'):(job.cancelRequested?'cancel-admission':'admit');
     try{
       const result=await service.bridge(route.target,operation,{job:spec,...(!accepted?{admissionKey:route.admissionKey,allowPreempt:route.allowPreempt}:{})});
       await update(job.id,current=>{
-        if(current.routing?.admissionKey!==route.admissionKey||terminal.has(current.state))return;
+        if(!applicable(current))return;
         if(!accepted&&current.routing.accepted===true&&result.accepted===false){current.state='UNKNOWN';current.error='节点回执与已确认接纳的任务不一致，将继续在原节点核对。';return;}
         if(!accepted&&result.accepted===false&&['REJECTED','CANCELED'].includes(result.state)){
           if(current.cancelRequested||result.state==='CANCELED'){
@@ -49,7 +54,7 @@ export function installFleetRouting(service,{schedulerResult,priorityCapable,usa
         if(!accepted&&result.accepted!==true){current.state='UNKNOWN';current.error='接纳结果未确认，将继续核对同一服务器和同一提交键。';return;}
         current.routing.accepted=true;schedulerResult(current,result);
       });
-    }catch(error){await update(job.id,current=>{if(current.routing?.admissionKey===route.admissionKey&&!terminal.has(current.state)){current.state='UNKNOWN';current.checkedAt=new Date().toISOString();current.error='节点接纳或状态核对未确认，将继续使用原服务器与原提交键。';}});}
+    }catch(error){await update(job.id,current=>{if(applicable(current)){current.state='UNKNOWN';current.checkedAt=new Date().toISOString();current.error='节点接纳或状态核对未确认，将继续使用原服务器与原提交键。';}});}
   }
 
   async function prepare(job,hostId){
