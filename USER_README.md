@@ -248,6 +248,9 @@ gpuctl run -g 8 --min-cards 1 --global-batch 256 --micro-batch 8 --auto-expand \
 
 ## 任务留言
 
+网页：“协作区 → 任务留言”，先选“随任务结束删除”并选择自己的任务，或“非任务留言，手动删除”。
+刷新可看最新状态；支持编辑和删除自己的留言。发送结果不确定时，直接重试原内容。
+
 `gpuctl notes` 查看共享留言；`gpuctl note --job 任务UUID "留言"` 关联自己的任务，
 确认完成/失败/取消后自动清理正文。排队、被抢占、失联/待核对期间保留。
 `gpuctl note --general "通知"` 是不随任务清理的长期留言；`gpuctl note-delete 编号`
