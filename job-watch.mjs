@@ -7,8 +7,9 @@ export async function watchJob(call,jobId,{interval=5,json=false,signal,write=ch
   let previous;
   while(!signal?.aborted){
     let job;
-    try{job=(await call('jobs.watch',{jobId})).result;}
-    catch(error){throw Error(`${error.message}\n状态未确认。训练继续由服务器管理；重新连接：gpuctl watch ${jobId}`);}
+    try{job=(await call('jobs.watch',{jobId},signal)).result;}
+    catch(error){if(signal?.aborted)return 130;throw Error(`${error.message}\n状态未确认。训练继续由服务器管理；重新连接：gpuctl watch ${jobId}`);}
+    if(signal?.aborted)return 130;
     if(!job||job.id!==jobId||typeof job.state!=='string')throw Error('Server returned an invalid task watch response');
     const key=feedbackKey(job);
     if(key!==previous){write(json?JSON.stringify(job)+'\n':jobFeedbackText(job)+'\n\n');previous=key;}

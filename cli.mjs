@@ -252,12 +252,13 @@ async function main(){
   if(base.username||base.password||base.pathname!=='/'||base.search||base.hash)fail('Use a base URL without credentials, path or query.');
   if(base.protocol!=='https:'&&!(base.protocol==='http:'&&base.hostname==='127.0.0.1'))fail('Remote APIs require HTTPS.');
   if(session&&session.url!==base.origin)session=undefined;
-  async function post(path,body){
-    const response=await fetch(new URL(`/api/${path}`,base),{method:'POST',redirect:'error',signal:AbortSignal.timeout(40000),headers:{'Content-Type':'application/json',...(session?{Authorization:`Bearer ${session.token}`}:{})},body:JSON.stringify(body)});
+  async function post(path,body,requestSignal){
+    const timeout=AbortSignal.timeout(40000),signal=requestSignal?AbortSignal.any([requestSignal,timeout]):timeout;
+    const response=await fetch(new URL(`/api/${path}`,base),{method:'POST',redirect:'error',signal,headers:{'Content-Type':'application/json',...(session?{Authorization:`Bearer ${session.token}`}:{})},body:JSON.stringify(body)});
     let data;try{data=await response.json();}catch{fail('Target is not an GPUQ JSON API. The hosted static preview does not provide one.');}
     if(!response.ok)fail(data.error||`HTTP ${response.status}`);return data;
   }
-  const call=(operation,args={})=>post('call',{operation,args});
+  const call=(operation,args={},signal)=>post('call',{operation,args},signal);
   let command=positionals[0];let result,mode={demo:true,gpuqConnected:false};
   if(command==='register'){
     if(positionals.length!==2)fail('Usage: register USERNAME');

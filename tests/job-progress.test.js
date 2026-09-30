@@ -100,3 +100,16 @@ test('installed CLI shows training error before final failure, with no submissio
   const before=calls.length;for(const args of [['watch',JOB,'--interval','0'],['watch',JOB,'--key',JOB],['watch',JOB,'--','cancel']])assert.equal((await run(args)).code,1);
   assert.equal(calls.length,before);
 });
+
+test('Ctrl+C promptly aborts a pending HTTP watch and never cancels training',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'gpuq-progress-abort-')),calls=[];let ready;
+  const watching=new Promise(resolve=>ready=resolve);
+  const server=createServer(async(req,res)=>{let raw='';for await(const part of req)raw+=part;const request=JSON.parse(raw);calls.push(request.operation);
+    res.setHeader('Content-Type','application/json');if(request.operation==='state')return res.end(JSON.stringify({state:{machines:[],jobs:[],users:[]}}));ready();});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const session=join(dir,'session'),file=join(dir,'gpuctl.mjs');
+  await writeFile(file,await standaloneClient());await writeFile(session,JSON.stringify({url:`http://127.0.0.1:${server.address().port}`,token:'synthetic',principal:{role:'member',userId:'alice'}}));
+  let child;t.after(async()=>{if(child?.exitCode===null)child.kill('SIGTERM');server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});});
+  child=spawn(process.execPath,[file,'--session-file',session,'watch',JOB]);const ended=new Promise(resolve=>child.once('close',resolve));
+  await watching;child.kill('SIGINT');const exit=await Promise.race([ended,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('watch HTTP abort was not prompt')),2000);timer.unref();})]);
+  assert.equal(exit,130);assert.deepEqual(calls,['state','jobs.watch']);
+});
