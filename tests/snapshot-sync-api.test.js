@@ -28,7 +28,11 @@ test('Git imports pin a full commit and bounded chunks without accepting environ
   await assert.rejects(snapshotSyncCall(f.service,principal,user,'projects.sync.chunk',{machine:'gpu-2',project:'new-project',key:args.key,path:'file',offset:0,data:'%%%invalid%%%'},f.auth));
 });
 test('container and node installer include the modules required by their runtime imports',async()=>{
-  const docker=await readFile(new URL('../deploy/Dockerfile',import.meta.url),'utf8'),installer=await readFile(new URL('../deploy/install-node.py',import.meta.url),'utf8');assert.match(docker,/COPY[^\n]*snapshot-sync\.mjs/);assert.match(docker,/COPY[^\n]*docs\/SYNC\.md/);assert.match(installer,/'snapshot-sync\.py'/);
+  const docker=await readFile(new URL('../deploy/Dockerfile',import.meta.url),'utf8'),manifest=JSON.parse(await readFile(new URL('../deploy/node-runtime.json',import.meta.url),'utf8'));
+  assert.match(docker,/COPY[^\n]*snapshot-sync\.mjs/);assert.match(docker,/COPY[^\n]*docs\/SYNC\.md/);
+  assert.equal(manifest.dependencies.includes('snapshot-sync.py'),true);
+  // Actual installer/upgrader copies and standalone deployed imports are
+  // exercised by node-runtime-deployment.test.py using this manifest.
 });
 test('authenticated PortalService routes code/data snapshots without allocating any GPU task',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'gpuq-sync-api-')),bootstrap=join(dir,'bootstrap'),password='Fixture-Sync-API-2026!',calls=[];
