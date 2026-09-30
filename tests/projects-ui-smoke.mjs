@@ -83,7 +83,8 @@ try{
   await login(page,'project-user');
   assert.equal(await page.locator('[name=workspace-machine]').inputValue(),'');
   assert.equal(await page.locator('#train-form [type=submit]').isDisabled(),true);
-  assert.equal(await page.locator('option[value=auto]').count(),0);
+  assert.equal(await page.locator('[name=workspace-machine] option[value=auto]').count(),0,'development workspace still requires one explicit machine');
+  assert.equal(await page.locator('[name=route-mode]').inputValue(),'fixed','new fleet mode does not change the legacy project default');
   assert.equal(await page.locator('[name=terminal-host]').isVisible(),false);
   await setMachine(machine);
   for(const name of ['machine','terminal-machine','file-machine'])assert.equal(await page.locator(`[name=${name}]`).inputValue(),machine);
