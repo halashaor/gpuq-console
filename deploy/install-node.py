@@ -64,6 +64,7 @@ if a.enable_host_root:
 node_config={'machine':a.node,'cards':node['cards'],'root':str(root),'gpu':str(binary),'database':cfg['db_path'],'slirp':shutil.which('slirp4netns'),'conda':node['conda'],'hostRoot':host_root}
 node_config.update(controlRoot=cfg.get('control_dir',str(scheduler/'control')),gpuqArchive=cfg.get('archive_path',str(scheduler/'current/gpuq.pyz')))
 previous=json.loads((dest/'node-config.json').read_text()) if (dest/'node-config.json').exists() else {}
+shutil.copy2(source/'deploy/scheduling-policy.py',dest/'scheduling-policy.py');(dest/'scheduling-policy.py').chmod(0o700)
 retention=node.get('diagnosticsRetentionDays',previous.get('diagnosticsRetentionDays',30))
 if type(retention) is not int or not 1<=retention<=365:raise SystemExit('Invalid diagnostics retention days (1..365)')
 node_config['diagnosticsRetentionDays']=retention
