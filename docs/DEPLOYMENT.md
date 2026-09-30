@@ -161,9 +161,11 @@ python3 deploy/upgrade-projects.py --directory "$HOME/.local/libexec/gpuq-consol
 
 已经使用完整 Ray P0 的节点须把两条命令中的档位改为 `--runtime-profile ray-p0`；参数没有默认值，项目升级不能把已安装的 Ray runner 降级成公共档。Ray 档在任何备份或程序写入前运行有时限、无 GPU 的 CPU/内存/PID 内核限制检查；失败立即停止。升级器不接受 `--configure-cpu-delegation`，不会调用 sudo、设置委派或刷新用户管理器；需要管理员处理的前置问题见 [RAY_RESOURCES.md](RAY_RESOURCES.md)。公共档不运行该 CPU 探针。
 
-升级器只读检查现有独立终端写入租约接口、终端返回协议、诊断采集与回收接口，以及同程序目录的诊断 GC service/timer 已安装、启用且运行。缺失或不兼容时，先按经审查的 `deploy/install-node.py` 完成配套 P0 安装；不能只更新一半助手。它不会替换现有 `node-executor.py`、终端助手、诊断助手或 systemd 单元，也不会启用宿主机命令等额外权限。
+升级器只读检查现有独立终端写入租约接口、终端返回协议、诊断采集与回收接口，以及同程序目录的诊断 GC service/timer 已安装、启用且运行。缺失或不兼容时，先按经审查的 `deploy/install-node.py` 完成配套 P0 安装。安装器、项目升级器和数据升级器统一使用 `deploy/node-runtime.json`，一起更新完整运行时助手、runner 和节点入口；不会修改 systemd 单元、启用宿主机命令或赋予额外权限。
 
-旧部署若使用不同程序目录，替换 `--directory`，诊断 GC service 必须已指向这个目录；不要为升级改名或迁移工作区。公共档更新项目存储、网络命令、所选 runner 与项目操作助手；Ray 档另配套安装 `job-resources.py` 和 `gpuq-ray`。依赖先落盘，runner 随后，新项目操作最后开放，避免新隔离模式落到旧 runner。所有来源先做路径、权限和语法检查并固定字节；原文件与配置保留私有备份。升级保持 `node-config.json`、GPUQ 数据库、旧工作区和运行任务不变，不重启任何服务。新项目放在工作区根目录的独立 `projects-v2`，不改旧 `users` 目录。
+旧部署若使用不同程序目录，替换 `--directory`，诊断 GC service 必须已指向这个目录；不要为升级改名或迁移工作区。Ray 档另配套安装 `job-resources.py` 和 `gpuq-ray`。所有依赖（包括 scheduling-policy、训练控制和 snapshot-sync）先落盘，runner 随后，dispatcher/probe 最后更新。任一依赖缺失或语法错误会在写入前停止；不要手工只拷贝 node-executor。项目升级固定来源字节并保留私有备份，保持配置、GPUQ 数据库、旧工作区和运行任务不变，不重启任何服务。数据升级沿用原有 datasets/conda 增补，默认保留已有 common/Ray 档；安装器未指定 --runtime-profile 时也保留已有档位。新项目仍在独立 `projects-v2`，不改旧 `users` 目录。
+
+源码门户先执行 `npm ci --ignore-scripts && npm run build:client`，再启动 `portal-server.mjs`；下载客户端来自预构建的 `build/gpuctl.mjs`。Docker 构建阶段自动生成这个产物，运行镜像不需要 esbuild。升级源码后必须重建，不能继续发送旧 CLI 产物。
 
 所有目标节点完成后，再部署同版 VPS 执行桥与 Portal 镜像；前端、CLI、执行桥、节点四层必须匹配。门户控制服务重建会短暂影响登录，不表示可以停止节点实验。上线后按项目验收清单验证上传、开发终端、发布、单卡训练与结果下载。
 
