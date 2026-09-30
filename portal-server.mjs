@@ -21,6 +21,7 @@ files['/community-ui.js']='community-ui.js';files['/community.css']='community.c
 files['/task-notes-ui.js']='task-notes-ui.js';files['/submission-keys.js']='submission-keys.js';
 guides['/guide/community']='./docs/COMMUNITY.md';
 guides['/guide/project-network']='./docs/PROJECT_NETWORK.md';
+guides['/guide/sync']='./docs/SYNC.md';
 export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,bridge,notificationConfigPath}){
   const url=new URL(origin);const notificationConfig=await loadTelegramNotifications(notificationConfigPath);
   const service=await PortalService.open(database,bootstrap,statusPath,bridge||(bridgeSocket?bridgeClient(bridgeSocket):undefined),notificationConfig);const rate=new Map();

@@ -4,12 +4,24 @@ import json, os, socketserver, subprocess
 from pathlib import Path
 BASE=Path('/opt/gpuq-console/executor')
 HOSTS={n['id']:n for n in json.loads(Path('/opt/gpuq-console/inventory.json').read_text())['nodes']}
+OPERATIONS={'sync','cancel','logs','diagnostics','priority'}
+for prefix,actions in {
+    'host':('exec','status','cancel'),
+    'files':('list','put','get'),
+    'terminal':('open','exchange','close','detach'),
+    'datasets':('list','status','prepare','register','unregister'),
+    'datasets.upload':('begin','manifest','seal','status','chunk','commit','discard'),
+    'projects':('list','create','status','publish','verify'),
+    'projects.snapshot':('info','manifest','get'),
+    'datasets.snapshot':('info','manifest','get'),
+    'projects.sync':('begin','manifest','seal','status','chunk','finish'),
+}.items():OPERATIONS.update(prefix+'.'+action for action in actions)
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         self.request.settimeout(35)
         try:
             data=json.loads(self.rfile.readline(1600001))
-            if data['machine'] not in HOSTS or data['operation'] not in ('sync','cancel','logs','diagnostics','watch','priority','host.exec','host.status','host.cancel','files.list','files.put','files.get','terminal.open','terminal.exchange','terminal.close','terminal.detach','datasets.list','datasets.status','datasets.prepare','datasets.register','datasets.unregister','datasets.upload.begin','datasets.upload.manifest','datasets.upload.seal','datasets.upload.status','datasets.upload.chunk','datasets.upload.commit','datasets.upload.discard','projects.list','projects.create','projects.status','projects.publish','projects.verify'): raise ValueError('Invalid operation')
+            if data['machine'] not in HOSTS or data['operation'] not in OPERATIONS: raise ValueError('Invalid operation')
             host=HOSTS[data['machine']]
             p=subprocess.run(['/usr/bin/ssh','-F','/dev/null','-T','-o','BatchMode=yes','-o','ConnectTimeout=5','-o','StrictHostKeyChecking=yes','-o','IdentitiesOnly=yes','-o',f'UserKnownHostsFile={BASE}/known_hosts','-i',str(BASE/'id_ed25519'),host['user']+'@'+host['address']],input=json.dumps({'operation':data['operation'],'args':data['args']}),text=True,capture_output=True,timeout=27)
             if p.returncode: raise ValueError('Node connection failed')

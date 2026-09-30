@@ -268,6 +268,9 @@ gpuctl run --gpu 3 --share --vram-mib 4096 --hami --sm-percent 50 -- python smal
 
 SM 限制只在本机验证过 SM 功能后接受，不保证性能比例；同卡外部进程不受你的限制。
 HAMi 请求不会降级为普通共享；运行库或节点能力不可用时拒绝提交。选卡不支持与弹性范围混用。
+## 半自动同步
+
+`gpuctl sync git ./仓库 --ref HEAD --to gpu-2 --project 新项目 --dry-run` 预览 Git 代码导入；去掉 `--dry-run` 执行。仓库先提交干净，目标项目不能覆盖。复制已发布代码和普通数据分别使用 `sync code`、`sync data`，明确 `--from` 与 `--to`；中断后重复原命令续传。代码复制后在目标准备自己的环境并 publish，数据复制后使用输出的完整 `名称@版本`。[命令示例](docs/SYNC.md)。
 
 ## 任务留言
 
