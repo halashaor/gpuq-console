@@ -155,7 +155,7 @@ gpuctl run -g 4 --min-vram 24 --name ddp -- python -m torch.distributed.run --st
 需要接入训练进度或保存/恢复适配器时，见[训练控制通道](docs/TRAINING_CONTROL.md)。
 通道接通不等于任意脚本自动支持保存让位；当前默认提交策略不变。
 
-新提交不接受 `run auto`：你选择服务器，调度器在该机内分配卡，不要求你手选 GPU 编号。当前不自动将跨机显存合并或启动跨机 DDP。
+固定模式选择服务器，在该机内自动分配显卡。多机模式使用 `gpuctl run auto --hosts all --project 项目 --release 完整版本 -g 2 -- python train.py`，或 `--hosts gpu-1,gpu-2` 限定候选；各机 release 不同则用重复 `--target-release SERVER=HASH` 明确映射。任务表显示等待选机、候选范围和实际节点；`gpuctl cancel 任务UUID` 取消。代码/数据必须先准备，命令和数据引用不自动改写；仍为同机多卡，不跨机拼卡。[完整示例](docs/FLEET.md)。
 
 ## 任务优先级与排队
 
@@ -216,7 +216,7 @@ gpuctl jobs
 
 ## 老工作区兼容
 
-从未选择项目的已有账号仍用原个人 `/workspace`，原上传和任务不搬走、不删除。选中项目后，`push/files/ssh/run/pull` 自动针对该机项目；临时回旧空间加 `--legacy`，例如 `gpuctl ssh --legacy`、`gpuctl run --legacy -g 1 -- python train.py`。旧模式输出仍在原工作区，没有 `--job` 结果目录；`--legacy` 不能和 `--project`/`--release` 混用，也不允许 `run auto`。新项目不会自动导入旧代码或环境。
+从未选择项目的已有账号仍用原个人 `/workspace`，原上传和任务不搬走、不删除。选中项目后，`push/files/ssh/run/pull` 自动针对该机项目；临时回旧空间加 `--legacy`，例如 `gpuctl ssh --legacy`、`gpuctl run --legacy -g 1 -- python train.py`。旧模式输出仍在原工作区，没有 `--job` 结果目录；`--legacy` 不能和 `--project`/`--release` 混用。自动选机不沿用单机记住的项目；未传 `--project` 时需先准备各候选机器的个人工作区。新项目不会自动导入旧代码或环境。
 
 ## 网页也能做什么
 

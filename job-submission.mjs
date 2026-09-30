@@ -3,10 +3,11 @@ import {MACHINES} from './dist/model.js';
 import {projectReference} from './projects.mjs';
 import {schedulingPolicy} from './dist/scheduling-policy.js';
 import {elasticAllocation,gpuPlacement} from './dist/gpu-allocation.js';
+import {fleetSelection} from './dist/fleet-selection.js';
 
 const FIELDS=new Set([
   'machine','cards','minVramGiB','argv','name','key',
-  'datasets','project','release','priority','scheduling','elastic','placement',
+  'datasets','project','release','priority','scheduling','elastic','placement','hosts','targetReleases',
 ]);
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 
@@ -33,8 +34,16 @@ export function normalizeJobSubmission(args,principal){
   const priority=args.priority===undefined?'normal':args.priority;
   if(!['idle','normal','high'].includes(priority))fail('优先级必须为 idle、normal 或 high。');
   if(priority==='high'&&principal.role!=='admin')fail('高优先级仅管理员可用。',403);
-  if(!Object.hasOwn(args,'machine')||typeof args.machine!=='string'||!MACHINES.some(m=>m.id===args.machine))fail('请明确选择有效的服务器；不支持自动选机。');
-  const datasets=datasetReferences(args.datasets),project=projectReference(args,{release:true});
+  const automatic=args.machine==='auto';
+  if(!Object.hasOwn(args,'machine')||typeof args.machine!=='string'||!automatic&&!MACHINES.some(m=>m.id===args.machine))fail('请明确选择有效服务器或带候选范围的 auto。');
+  if(!automatic&&(args.hosts!==undefined||args.targetReleases!==undefined))fail('候选服务器与节点版本映射仅用于自动选机。');
+  let hosts,targetReleases;
+  if(automatic){
+    try{({hosts,targetReleases}=fleetSelection(args.hosts,args.targetReleases,MACHINES.map(m=>m.id)));}catch(error){fail(error.message);}
+  }
+  const datasets=datasetReferences(args.datasets),project=projectReference(args,{release:!automatic||args.release!==undefined});
+  if(targetReleases&&!project.project)fail('节点版本映射需要明确项目名称。');
+  if(automatic&&project.project&&!project.release&&hosts.some(h=>!targetReleases?.[h]))fail('没有默认 release 时，必须为每个候选服务器指定固定版本。');
   if(typeof args.key!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(args.key))fail('需提供 UUID 提交键，重试必须复用。');
   if(!Array.isArray(args.argv)||!args.argv.length||args.argv.length>128||args.argv.some(a=>typeof a!=='string'||a.includes('\0'))||JSON.stringify(args.argv).length>12000)fail('训练命令无效或过长。');
   if(!Number.isInteger(args.cards)||args.cards<1||args.cards>Math.max(...MACHINES.map(m=>m.cards)))fail('申请卡数超出单机容量。');
@@ -42,12 +51,14 @@ export function normalizeJobSubmission(args,principal){
   if(args.elastic!==undefined){try{allocation=elasticAllocation(args.elastic,args.cards,explicit);}catch(error){fail(error.message);}}
   let placement=null;
   if(args.placement!==undefined){try{placement=gpuPlacement(args.placement,args.cards,allocation,explicit,priority);}catch(error){fail(error.message);}}
+  if(automatic&&placement?.shared)fail('共享任务需观察并明确选择服务器和显卡，不能自动跨机选卡。');
   const minVramGiB=args.minVramGiB??0;
   if(typeof minVramGiB!=='number'||!Number.isFinite(minVramGiB)||minVramGiB<0||minVramGiB>128)fail('最低显存参数无效。');
   const name=args.name||'train';
   if(typeof name!=='string'||name.length>64||/[\x00-\x1f]/.test(name))fail('任务名称无效。');
   const request={machine:args.machine,cards:args.cards,minVramGiB,argv:[...args.argv],name,key:args.key,
     datasets,project,priority,priorityProvided:args.priority!==undefined,explicit,
+    ...(automatic?{hosts,...(targetReleases?{targetReleases}:{})}:{}),
     ...(placement?{placement}:{}),
     ...(allocation?{elastic:allocation.elastic,allowedGpuCounts:allocation.allowed}:{})};
   // This positional representation is a persisted compatibility contract, not
@@ -59,6 +70,7 @@ export function normalizeJobSubmission(args,principal){
   if(explicit)identity.push({scheduling:explicit});
   if(allocation)identity.push({elastic:allocation.elastic});
   if(placement)identity.push({placement});
+  if(automatic)identity.push({hosts,...(targetReleases?{targetReleases}:{})});
   request.digest=createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   return request;
 }

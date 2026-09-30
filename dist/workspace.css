@@ -189,3 +189,7 @@ input[type=file]::file-selector-button {border:1px solid #d7dfeb;background:#fff
 #page-datasets #dataset-upload-status,#page-datasets #dataset-upload-form .muted {overflow-wrap:anywhere;min-width:0}
 #page-datasets #dataset-upload-progress {display:block;width:100%;max-width:100%;margin:12px 0}
 #page-datasets #dataset-upload-form input[type=file] {width:100%;min-width:0;max-width:100%}
+.execution-panel .fleet-candidate {display:flex;align-items:center;gap:8px;min-height:44px}
+.execution-panel .fleet-candidate input {width:18px;height:18px;min-height:0;padding:0;flex:none}
+#fleet-options fieldset {border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;min-width:0}
+#fleet-options textarea {width:100%;box-sizing:border-box}

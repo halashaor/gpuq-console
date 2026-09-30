@@ -96,7 +96,7 @@ model = AutoModel.from_pretrained(model_dir, local_files_only=True)
 
 项目名只用小写 ASCII 字母、数字、下划线、连字符，以字母开头，长度 1–48。机器和项目选择保存在本机登录缓存中，按服务器分别记忆；切到没有选过项目的新服务器时不会沿用另一台的项目。可用 `--project NAME` 临时覆盖，不修改记忆。登录另一账号会清除旧身份的选择。
 
-`run` 选择 `latestReadyRelease`，并核验该版本在 READY 清单中。顶层 `PUBLISHING` 不会阻止使用以前的 READY 版本，因此想运行新改动时务必先核对最新发布结果。`--release 完整64位哈希` 可显式固定版本。没有可用版本时清楚报错，绝不自动替用户发布、切机或占卡等发布。`run auto` 对新任务一律拒绝。
+固定服务器的 `run` 选择 `latestReadyRelease`，并核验该版本在 READY 清单中。顶层 `PUBLISHING` 不会阻止使用以前的 READY 版本，因此想运行新改动时务必先核对最新发布结果。`--release 完整64位哈希` 可显式固定版本。自动选机须主动指定候选范围和固定 release，也可按节点给出 READY release 映射；不选择 latest，不替用户发布或复制代码/环境。详见 [多机选机](FLEET.md)。
 
 任务提交会输出版本和 `Submission key`。请求超时重试时保留相同命令、`--key UUID` 与 `--release HASH`，避免后续发布改变“最新版本”。发布按项目维护后台状态，不使用训练提交 key；请求超时先 `project status`，仍在发布时等待，失败时查看原因再重新发布。
 

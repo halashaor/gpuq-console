@@ -11,6 +11,7 @@ const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.c
 files['/job-diagnostics-ui.js']='job-diagnostics-ui.js';files['/job-diagnostics.css']='job-diagnostics.css';
 files['/scheduling-policy.js']='scheduling-policy.js';
 files['/scheduling-ui.js']='scheduling-ui.js';
+files['/fleet-selection.js']='fleet-selection.js';files['/fleet-routing-ui.js']='fleet-routing-ui.js';
 files['/job-progress.js']='job-progress.js';
 files['/job-progress-ui.js']='job-progress-ui.js';
 const mime={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};
@@ -22,6 +23,7 @@ files['/task-notes-ui.js']='task-notes-ui.js';files['/submission-keys.js']='subm
 guides['/guide/community']='./docs/COMMUNITY.md';
 guides['/guide/project-network']='./docs/PROJECT_NETWORK.md';
 guides['/guide/sync']='./docs/SYNC.md';
+guides['/guide/fleet']='./docs/FLEET.md';
 export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,bridge,notificationConfigPath}){
   await standaloneClient();
   const url=new URL(origin);const notificationConfig=await loadTelegramNotifications(notificationConfigPath);

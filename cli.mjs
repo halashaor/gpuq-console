@@ -7,6 +7,7 @@ import {createInterface} from 'node:readline/promises';
 import {constants as fsConstants} from 'node:fs';
 import {realpathSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
+import {fleetSelection,parseTargetReleases} from './dist/fleet-selection.js';
 import {watchJob} from './job-watch.mjs';
 import {progressText} from './dist/job-progress.js';
 import {execFile} from 'node:child_process';
@@ -35,6 +36,8 @@ gpuctl sync git LOCAL_REPO --to SERVER --project NEW --ref HEAD --dry-run
 gpuctl sync code --from SOURCE --to TARGET --project SOURCE_PROJECT --target-project NEW --release HASH
 gpuctl sync data NAME@VERSION --from SOURCE --to TARGET --name NAME --dry-run
 gpuctl run -g 2 -- python train.py
+gpuctl run auto --hosts all -g 2 --project vision --release HASH -- python train.py
+gpuctl run auto --hosts gpu-1,gpu-2 --project vision --target-release gpu-1=HASH --target-release gpu-2=HASH -- python train.py
 gpuctl jobs / logs JOB / cancel JOB
 gpuctl watch JOB                 Watch progress / completion / failure over SSH
 gpuctl notify JOB on|off|status  Opt into your configured Telegram destination
@@ -112,17 +115,18 @@ Projects are selected per server, never silently copied or moved between machine
 --project SLUG overrides the selection; --legacy explicitly uses the old workspace.
 --release HASH pins a READY project release. Without it, run uses latest READY.
 --job UUID selects a project's per-job outputs for files / pull (read-only to CLI).
-Choose a server explicitly: new jobs do not accept auto.
+Auto requires explicit --hosts all or a comma-separated authorized server list.
+Auto project runs require pinned --release or full --target-release SERVER=HASH mappings; never latest.
 Existing users without a selected project keep their legacy workspace.
 The standard Python environment is /opt/conda; never modify global Conda.`;
 const args=process.argv.slice(2);let options,positionals,training;
 let wantsJSON=args.slice(0,args.includes('--')?args.indexOf('--'):args.length).includes('--json');
 function fail(message){throw Error(message);}
-function allocationText(job){const p=job.placement;return (job.elastic?`${job.elastic.minCards}–${job.cards} 张（当前 ${job.actualCards??job.assignedIndices?.length??0}）`:`${job.cards} 张 GPU`)+(p?` · ${p.shared?'共享':'固定'} GPU ${p.gpuIndices.join(',')}${p.shared?' · '+p.vramMiB+' MiB':''}`:'');}
+function allocationText(job){const p=job.placement,maximum=job.targetCards??job.cards;return (job.elastic?`${job.elastic.minCards}–${maximum} 张（当前 ${job.actualCards??job.assignedIndices?.length??0}）`:`${maximum} 张 GPU`)+(job.automatic&&job.targetCards?` · 本机上限 ${maximum} · ${['SUCCEEDED','FAILED','CANCELED'].includes(job.state)?'原申请最大':'全局预留'} ${job.cards}`:'')+(p?` · ${p.shared?'共享':'固定'} GPU ${p.gpuIndices.join(',')}${p.shared?' · '+p.vramMiB+' MiB':''}`:'');}
 const CLI_OPTIONS=new Map([
   ...['json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','checkpointable','general','auto-expand','share','hami','dry-run'].map(key=>[key,'flag']),
-  ...['url','session-file','total','cards','as','role','name','min-vram','key','project','release','job','priority','cwd','timeout','reconnect','env-mode','rank','yield','restart-policy','min-cards','global-batch','micro-batch','gpu','vram-mib','sm-percent','mode','interval','from','to','ref','target-project'].map(key=>[key,'value']),
-  ['machine','machines'],['data','datasets'],
+  ...['url','session-file','total','cards','as','role','name','min-vram','key','project','release','job','priority','cwd','timeout','reconnect','env-mode','rank','yield','restart-policy','min-cards','global-batch','micro-batch','gpu','vram-mib','sm-percent','mode','interval','from','to','ref','target-project','hosts'].map(key=>[key,'value']),
+  ['machine','machines'],['data','datasets'],['target-release','targetReleaseValues'],
 ]);
 
 export function parseCLIOptions(argv){
@@ -138,7 +142,7 @@ export function parseCLIOptions(argv){
     const value=argv[++i];
     if(!value||value.startsWith('--'))fail(`Missing value: ${item}`);
     if(kind==='value')options[key]=value;
-    else options[kind].push(value);
+    else (options[kind]??=[]).push(value);
   }
   return {options,positionals,training:[]};
 }
@@ -275,6 +279,7 @@ async function main(){
   ({options,positionals,training}=parseCLIOptions(args));
   if(options.help||!positionals.length){console.log(help);return;}
   if(options.general&&positionals[0]!=='note')fail('--general is only valid for note');
+  if((options.hosts!==undefined||options.targetReleaseValues)&&positionals[0]!=='run')fail('--hosts and --target-release are only valid for run auto');
   if(options.interval!==undefined&&positionals[0]!=='watch')fail('--interval is only valid for watch');
   if(positionals[0]==='watch'){
     if(positionals.length!==2||training.length||options.machines.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','json','url','session-file','interval'].includes(k)))fail('Usage: watch JOB [--interval 1..60] [--json]');
@@ -512,11 +517,17 @@ async function main(){
       if(action==='unregister'||byOperation){result={...result,machine};if(result.state==='FAILED')process.exitCode=1;else if(result.state==='UNKNOWN')process.exitCode=3;}
     }else if(command==='run'&&positionals.length===2){
       if(options.as)fail('--as cannot be used for real execution');
-      if(positionals[1]==='auto')fail('请手选服务器：gpuctl use gpu-1；GPU 数量由 -g 指定，在该机内自动分配');
       if(!training.length)fail('Put the training command after --');
-      const context=projectArgs(positionals[1]);
+      const automatic=positionals[1]==='auto';let fleet=null;
+      if(automatic){if(options.machines.length)fail('run auto selects candidates with --hosts, not --machine');if(!options.hosts)fail('run auto requires --hosts all or --hosts SERVER,SERVER');fleet=fleetSelection(options.hosts==='all'?state.machines.map(m=>m.id):options.hosts.split(',').map(machineName),parseTargetReleases(options.targetReleaseValues||[]),state.machines.map(m=>m.id));}
+      else if(options.hosts!==undefined||options.targetReleaseValues)fail('--hosts and --target-release require run auto');
+      const context=automatic?(options.project?{project:options.project}:{}):projectArgs(positionals[1]);
       if(options.release&&!context.project)fail('--release requires a selected project');
-      if(context.project){
+      if(fleet?.targetReleases&&!context.project)fail('--target-release requires an explicit --project for auto');
+      if(context.project&&automatic){
+        if(options.release)context.release=options.release;
+        if(!context.release&&fleet.hosts.some(h=>!fleet.targetReleases?.[h]))fail('Auto project runs require --release HASH or a pinned --target-release for every candidate; never latest');
+      }else if(context.project){
         const current=(await call('projects.status',{machine:positionals[1],project:context.project})).result;
         const release=options.release||current.latestReadyRelease;
         if(!release||!/^[a-f0-9]{64}$/.test(release)||!current.releases?.some(r=>r.release===release&&r.state==='READY'))fail('项目还没有指定的 READY 版本。先执行 gpuctl project publish，再用 gpuctl project status 确认；run 不会自动发布。');
@@ -528,7 +539,7 @@ async function main(){
       const elastic=elasticKeys.some(k=>Object.hasOwn(options,k))?{minCards:Number(options['min-cards']),globalBatch:Number(options['global-batch']),microBatch:Number(options['micro-batch']),autoExpand:options['auto-expand']===true}:null;
       const placementKeys=['gpu','share','vram-mib','hami','sm-percent'];
       const placement=placementKeys.some(k=>Object.hasOwn(options,k))?{gpuIndices:options.gpu?.split(',').map(n=>/^\d+$/.test(n)?Number(n):NaN),shared:options.share===true,...(options['vram-mib']?{vramMiB:Number(options['vram-mib'])}:{}),hami:options.hami===true,...(options['sm-percent']?{smPercent:Number(options['sm-percent'])}:{})}:null;
-      result=(await call('jobs.submit',{machine:positionals[1],cards:Number(options.cards||placement?.gpuIndices?.length||1),minVramGiB:Number(options['min-vram']||0),name:options.name||'train',argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context,...(datasets.length?{datasets}:{})})).result;
+      result=(await call('jobs.submit',{machine:positionals[1],...(fleet||{}),cards:Number(options.cards||placement?.gpuIndices?.length||1),minVramGiB:Number(options['min-vram']||0),name:options.name||'train',argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context,...(datasets.length?{datasets}:{})})).result;
     }else if(command==='jobs'&&positionals.length===1)result=state.jobs;
     else if(command==='priority'&&positionals.length===3){
       if(!['idle','normal','high','P0','P1','P2','P3','P4'].includes(positionals[2]))fail('Queue rank must be P0..P4 (or idle, normal, high); yielding/restart stay unchanged');
@@ -629,7 +640,7 @@ async function main(){
     else console.log(`${result.state==='UNREGISTERING'?'已受理注销，尚未完成':result.state} · ${result.operationId}${result.error?'\n'+result.error:''}\n查看：gpuctl data status ${result.operationId} --machine ${result.machine}`);
     return;
   }
-  if(command==='run'){console.log(`已提交 ${result.id}\n${result.machine} · ${allocationText(result)} · ${result.state}\n查看日志：gpuctl logs ${result.id}`);return;}
+  if(command==='run'){console.log(`已提交 ${result.id}\n${result.machine||'待选服务器'} · ${allocationText(result)} · ${result.state}${result.automatic?'\n候选：'+result.candidateHosts.join(', '):''}\n查看日志：gpuctl logs ${result.id}`);return;}
   if(command==='exec'){
     if(result.stdout)process.stdout.write(result.stdout);
     if(result.stderr)process.stderr.write(result.stderr);

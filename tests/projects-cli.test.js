@@ -143,7 +143,7 @@ test('run refuses missing or unready release before jobs.submit and never choose
   f.setReleases([{release:RELEASE,state:'PUBLISHING'}],RELEASE);
   let result=await f.cli(['run','--','true']);assert.equal(result.code,1);assert.match(result.stderr,/project publish/);
   assert.equal(f.calls.some(c=>c.operation==='jobs.submit'),false);
-  f.calls.length=0;result=await f.cli(['run','auto','--legacy','--','true']);assert.equal(result.code,1);assert.match(result.stderr,/手选服务器/);
+  f.calls.length=0;result=await f.cli(['run','auto','--legacy','--','true']);assert.equal(result.code,1);assert.match(result.stderr,/--hosts/);
   assert.equal(f.calls.some(c=>c.operation!=='state'),false);
   f.calls.length=0;result=await f.cli(['run','--legacy','--release',RELEASE,'--','true']);assert.equal(result.code,1);
   assert.equal(f.calls.some(c=>c.operation==='jobs.submit'),false);

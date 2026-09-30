@@ -7,6 +7,7 @@ import {normalizeJobSubmission,createSubmittedJob,datasetReferences} from './job
 import {elasticCapable,placementCapable} from './dist/gpu-allocation.js';
 import {applyJobFeedback} from './dist/job-progress.js';
 import {snapshotSyncCall} from './snapshot-sync.mjs';
+import {isAutomatic,createAutomaticJob,installFleetRouting} from './fleet-routing.mjs';
 export {datasetReferences} from './job-submission.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -45,11 +46,12 @@ export function bridgeClient(socketPath){
 }
 export function installExecution(service,bridge){
   service.bridge=bridge;service.executionEnabled=!!bridge;service.reconciling=false;
+  installFleetRouting(service,{schedulerResult,priorityCapable,usage});
   service.reconcile=async()=>{
     if(!bridge||service.reconciling||service.closing)return;
-    service.reconciling=true;
+    service.reconciling=true;service.fleetNeedsAnotherPass=false;
     try{
-      const jobs=service.store.jobs.filter(j=>!TERMINAL.has(j.state));
+      const jobs=service.store.jobs.filter(j=>!TERMINAL.has(j.state)&&!isAutomatic(j));
       await Promise.all(MACHINES.map(async m=>{
         for(const job of jobs.filter(j=>j.machine===m.id)){
           const policyRevision=job.policyRevision||0;
@@ -68,12 +70,17 @@ export function installExecution(service,bridge){
           }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&(current.policyRevision||0)===policyRevision){current.error=String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();}});}
         }
       }));
-    }finally{maintainTaskNotes(service);service.reconciling=false;}
+      if(!service.closing)await service.reconcileFleet();
+    }finally{
+      try{if(!service.closing)await service.enqueue(()=>maintainTaskNotes(service));}
+      finally{service.reconciling=false;if(service.fleetNeedsAnotherPass&&!service.closing)setImmediate(()=>service.reconcile().catch(()=>{}));}
+    }
   };
   if(bridge){service.executionTimer=setInterval(()=>service.reconcile().catch(()=>{}),15000);service.executionTimer.unref();}
 }
-export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
-export function publicJob(job){const {spec,digest,schedulerPolicy,...safe}=job;return {...safe,command:spec.argv,
+export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+(machine?j.targetCards??j.cards:j.cards),0);}
+export function publicJob(job){const {spec,digest,schedulerPolicy,request,routing,...safe}=job;return {...safe,command:spec?.argv||request?.argv||[],
+  ...(request?{automatic:true,...(job.targetCards?{allowedGpuCounts:job.allowedGpuCounts?.filter(n=>n<=job.targetCards)}:{})}:{}),
   yieldPolicy:['legacy','never','now','save'].includes(schedulerPolicy?.yield_policy)?schedulerPolicy.yield_policy:null,
   restartPolicy:['never','on-preempt'].includes(schedulerPolicy?.restart_policy)?schedulerPolicy.restart_policy:null,
   dispatchMode:['queue','preempt-now','preempt-save'].includes(schedulerPolicy?.dispatch_mode)?schedulerPolicy.dispatch_mode:null};}
@@ -192,6 +199,14 @@ export async function executionCall(service,principal,operation,args){
     if(previous){if(previous.digest!==digest)fail('同一提交键不能用于不同任务。',409);return publicJob(previous);}
     if(service.store.jobs.length>=5000)fail('任务历史达到归档上限，请联系管理员归档后提交。',503);
     if(usage(service.store.jobs,user.id)+request.cards>user.total)fail('超出跨机器用卡总额度（排队、运行和待核对任务均计入）。',409);
+    if(request.machine==='auto'){
+      for(const host of request.hosts)authorizedMachine(host);
+      if(!request.hosts.some(host=>{const cap=Math.min(request.cards,MACHINES.find(m=>m.id===host).cards,user.limits[host]);return request.elastic?request.allowedGpuCounts.some(n=>n<=cap):request.cards<=cap;}))fail('候选服务器的静态容量或个人额度均不满足最低卡数。',409);
+      const job=createAutomaticJob(request,user);service.db.exec('BEGIN IMMEDIATE');
+      try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,job.id,'fleet-reserved');service.db.exec('COMMIT');}
+      catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==job.id);throw e;}
+      setImmediate(()=>service.reconcile().catch(()=>{}));return publicJob(job);
+    }
     authorizedMachine(request.machine);
     if(project.project){
       let prepared;
@@ -256,10 +271,10 @@ export async function executionCall(service,principal,operation,args){
     }
   }
   if(operation==='jobs.cancel'){
-    const job=jobById(args.jobId);if(!TERMINAL.has(job.state)){job.cancelRequested=true;service.save();service.audit(principal.username,operation,job.id,'requested');setImmediate(()=>service.reconcile().catch(()=>{}));}
+    const job=jobById(args.jobId);if(!TERMINAL.has(job.state)){job.cancelRequested=true;if(isAutomatic(job)&&!job.routing?.target){job.state='CANCELED';job.finishedAt=new Date().toISOString();job.queueReason='尚未选机，已在门户取消。';}service.save();maintainTaskNotes(service);service.audit(principal.username,operation,job.id,'requested');setImmediate(()=>service.reconcile().catch(()=>{}));}
     return publicJob(job);
   }
-  if(operation==='jobs.logs'){const job=jobById(args.jobId);return service.bridge(job.machine,'logs',{job:job.spec});}
+  if(operation==='jobs.logs'){const job=jobById(args.jobId);return job.machine&&job.spec?service.bridge(job.machine,'logs',{job:job.spec}):{text:'任务尚未选择服务器，暂无节点日志。'};}
   if(operation==='jobs.watch'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('进度查询参数无效。');
     const job=jobById(args.jobId);
@@ -269,13 +284,13 @@ export async function executionCall(service,principal,operation,args){
       const result=await service.bridge(job.machine,'watch',{job:job.spec});
       // Inspection never admits a new task, cancels it, or creates a retry.
       // If admission has not reached the node, keep the portal reservation.
-      if(result.nodeJobId){schedulerResult(job,result);service.save();service.pruneTaskNotes?.();}
+      if(result.nodeJobId){if(job.routing)job.routing.accepted=true;schedulerResult(job,result);service.save();maintainTaskNotes(service);}
       return publicJob(job);
     }catch(error){return {...publicJob(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
   }
   if(operation==='jobs.diagnostics'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('诊断参数无效。');
-    const job=jobById(args.jobId);authorizedMachine(job.machine);
+    const job=jobById(args.jobId);if(!job.machine||!job.spec)fail('任务尚未选择服务器，暂无节点诊断。',409);authorizedMachine(job.machine);
     return service.bridge(job.machine,'diagnostics',{job:job.spec});
   }
   if(operation==='files.list'||operation==='files.put'||operation==='files.get'){
