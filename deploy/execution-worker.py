@@ -11,6 +11,7 @@ for prefix,actions in {
     'terminal':('open','exchange','close','detach'),
     'datasets':('list','status','prepare','register','unregister'),
     'datasets.upload':('begin','manifest','seal','status','chunk','commit','discard'),
+    'datasets.workspace':('list','put','get','status','publish'),
     'projects':('list','create','status','publish','verify'),
     'projects.snapshot':('info','manifest','get'),
     'datasets.snapshot':('info','manifest','get'),
