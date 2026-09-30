@@ -29,7 +29,7 @@ test('Git imports pin a full commit and bounded chunks without accepting environ
 });
 test('container and node installer include the modules required by their runtime imports',async()=>{
   const docker=await readFile(new URL('../deploy/Dockerfile',import.meta.url),'utf8'),manifest=JSON.parse(await readFile(new URL('../deploy/node-runtime.json',import.meta.url),'utf8'));
-  assert.match(docker,/COPY[^\n]*snapshot-sync\.mjs/);assert.match(docker,/COPY[^\n]*docs\/SYNC\.md/);
+  assert.match(docker,/COPY[^\n]*snapshot-sync\.mjs/);assert.match(docker,/COPY[^\n]*docs\/USER_GUIDE\.md/);
   assert.equal(manifest.dependencies.includes('snapshot-sync.py'),true);
   // Actual installer/upgrader copies and standalone deployed imports are
   // exercised by node-runtime-deployment.test.py using this manifest.

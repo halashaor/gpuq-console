@@ -7,7 +7,8 @@
 .community-orbit::before {content:"";position:absolute;inset:8px -9px;border:1px solid #a8bbd8;border-radius:50%}
 .community-orbit::after {content:"";position:absolute;width:8px;height:8px;top:1px;left:29px;border-radius:50%;background:#6c8abe;box-shadow:0 0 0 5px #f1f5fa}
 .community-guide {white-space:nowrap;color:#4f6484;font-size:12px;text-decoration:none;padding:12px 0}
-.community-tabs {display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #dbe3ee;margin-bottom:22px;gap:12px}
+.community-tabs {display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid #dbe3ee;margin-bottom:22px;gap:12px}
+.community-tabs.has-task-notes {grid-template-columns:repeat(4,1fr)}
 .community-tabs button {font:inherit;font-size:14px;font-weight:650;color:#65768e;background:transparent;border:0;border-bottom:2px solid transparent;padding:15px 16px;text-align:left;cursor:pointer;min-height:70px}
 .community-tabs button span {display:block;font-size:11px;font-weight:400;margin-top:7px;color:#7c8ba0}
 .community-tabs button[aria-selected=true] {color:#294f91;border-color:#426cb3}
@@ -86,7 +87,8 @@
   .community-intro h2 {font-size:12px;font-weight:500;letter-spacing:0;margin:0}
   .community-guide {font-size:10px;padding:0;margin:0}
   .community-intro .eyebrow {display:none}
-  .community-tabs {grid-template-columns:repeat(2,1fr);gap:3px;margin-bottom:17px}
+  .community-tabs {gap:3px;margin-bottom:17px}
+  .community-tabs.has-task-notes {grid-template-columns:repeat(2,1fr)}
   .community-tabs button {font-size:13px;padding:13px 6px;min-height:68px}
   .community-tabs button span {font-size:10px;line-height:1.6}
   .community-toolbar {flex-wrap:wrap;gap:12px}
