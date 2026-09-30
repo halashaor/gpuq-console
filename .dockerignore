@@ -13,5 +13,7 @@
 !docs/JOB_DIAGNOSTICS.md
 !docs/RAY_RESOURCES.md
 !docs/COMMUNITY.md
+!docs/SYNC.md
+!docs/FLEET.md
 !deploy/Dockerfile
 !deploy/install-client.sh
