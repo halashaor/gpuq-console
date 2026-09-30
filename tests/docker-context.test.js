@@ -39,9 +39,9 @@ test('every source required by actual Docker COPY survives the build context fil
   assert.ok(required.has('scripts/build-client.mjs'));assert.ok(required.has('package-lock.json'));
 });
 
-test('omitting either new guide reproduces an actual Docker source-context failure',async()=>{
+test('omitting a required reader guide or installer reproduces a Docker source-context failure',async()=>{
   const ignore=await readFile(new URL('../.dockerignore',import.meta.url),'utf8');
-  for(const file of ['docs/SYNC.md','docs/FLEET.md']){
+  for(const file of ['docs/USER_GUIDE.md','deploy/install-client.ps1','scripts/build-client.mjs','package-lock.json']){
     const modified=ignore.split('\n').filter(line=>line!=='!'+file).join('\n');
     const {errors}=await sourceContextErrors(modified);assert.ok(errors.includes('COPY source excluded by .dockerignore: '+file));
   }

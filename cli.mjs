@@ -147,33 +147,40 @@ export function parseCLIOptions(argv){
   return {options,positionals,training:[]};
 }
 const DATA_CHUNK=1024*1024,DATA_MANIFEST_LIMIT=64*1024*1024,DATA_ENTRY_LIMIT=500000;
-const sameFile=(a,b)=>a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs&&a.nlink===b.nlink;
+function sameDatasetFile(a,b,{pathToHandle=false}={}){
+  // Older Windows libuv lstat can return dev=0 or a 64-bit serial while fstat
+  // returns the low 32 bits. Allow that only when pairing a path with a handle;
+  // later path/path and handle/handle checks keep the complete device value.
+  // BigInt stats preserve NTFS file IDs and sub-millisecond timestamps.
+  const sameDevice=a.dev===b.dev||(pathToHandle&&process.platform==='win32'&&(a.dev===0n||BigInt.asUintN(32,a.dev)===BigInt.asUintN(32,b.dev)));
+  return sameDevice&&a.ino===b.ino&&a.mode===b.mode&&a.size===b.size&&a.mtimeNs===b.mtimeNs&&a.ctimeNs===b.ctimeNs&&a.nlink===b.nlink;
+}
 function dataPath(path){if(!path||Buffer.byteLength(path)>4096||path.startsWith('/')||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>['','.','..','.ssh','.env','.git','.venv','anaconda3','miniconda3','.conda'].includes(p)))fail('Unsafe, credential or environment dataset path: '+path);return path;}
 async function scanLocalDataset(root,progress){
   dataPath(basename(resolve(root)));
   const directories=[],files=[],local=new Map(),directoryStamps=new Map();let totalBytes=0,manifestEstimate=42,hashed=0;
   const account=entry=>{manifestEstimate+=Buffer.byteLength(JSON.stringify(entry))+1;if(manifestEstimate>DATA_MANIFEST_LIMIT)fail('Dataset manifest exceeds 64 MiB; split it by data scope');if(directories.length+files.length>DATA_ENTRY_LIMIT)fail('Dataset manifest exceeds 500,000 entries');};
-  const top=await lstat(root);if(!top.isDirectory()||top.isSymbolicLink())fail('data upload requires a real local directory, not a file or symlink');
+  const top=await lstat(root,{bigint:true});if(!top.isDirectory()||top.isSymbolicLink())fail('data upload requires a real local directory, not a file or symlink');
   async function visit(folder,prefix=''){
-    const before=await lstat(folder);if(!before.isDirectory()||before.isSymbolicLink())fail('Local directory changed or is a symlink');directoryStamps.set(folder,before);
+    const before=await lstat(folder,{bigint:true});if(!before.isDirectory()||before.isSymbolicLink())fail('Local directory changed or is a symlink');directoryStamps.set(folder,before);
     for(const name of (await readdir(folder)).sort()){
-      const path=dataPath(prefix?prefix+'/'+name:name),filename=join(folder,name),info=await lstat(filename);
+      const path=dataPath(prefix?prefix+'/'+name:name),filename=join(folder,name),info=await lstat(filename,{bigint:true});
       if(info.isSymbolicLink())fail('Symlink dataset upload is not supported: '+path);
       if(info.isDirectory()){directories.push(path);account(path);await visit(filename,path);continue;}
-      if(!info.isFile()||info.nlink!==1)fail('Only regular, single-link dataset files are supported: '+path);
-      if(!Number.isSafeInteger(info.size)||!Number.isSafeInteger(totalBytes+info.size))fail('Dataset size exceeds safe integer range');totalBytes+=info.size;
-      const file=await open(filename,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);let sha256;
-      try{const initial=await file.stat();if(!initial.isFile()||!sameFile(info,initial))fail('Local file changed before hashing: '+path);const hash=createHash('sha256'),buffer=Buffer.alloc(DATA_CHUNK);let offset=0;while(offset<info.size){const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,info.size-offset),offset);if(!bytesRead)fail('Local file changed during hashing: '+path);hash.update(buffer.subarray(0,bytesRead));offset+=bytesRead;progress('HASHING',{path,bytes:hashed+offset});}if(!sameFile(info,await file.stat()))fail('Local file changed during hashing: '+path);sha256=hash.digest('hex');}finally{await file.close();}
-      const entry={path,size:info.size,sha256};files.push(entry);account(entry);local.set(path,{filename,info});hashed+=info.size;
+      if(!info.isFile()||info.nlink!==1n)fail('Only regular, single-link dataset files are supported: '+path);
+      const size=Number(info.size);if(!Number.isSafeInteger(size)||!Number.isSafeInteger(totalBytes+size))fail('Dataset size exceeds safe integer range');totalBytes+=size;
+      const file=await open(filename,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);let sha256,handleInfo;
+      try{handleInfo=await file.stat({bigint:true});if(!handleInfo.isFile()||!sameDatasetFile(info,handleInfo,{pathToHandle:true}))fail('Local file changed before hashing: '+path);const hash=createHash('sha256'),buffer=Buffer.alloc(DATA_CHUNK);let offset=0;while(offset<size){const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,size-offset),offset);if(!bytesRead)fail('Local file changed during hashing: '+path);hash.update(buffer.subarray(0,bytesRead));offset+=bytesRead;progress('HASHING',{path,bytes:hashed+offset});}if(!sameDatasetFile(handleInfo,await file.stat({bigint:true})))fail('Local file changed during hashing: '+path);sha256=hash.digest('hex');}finally{await file.close();}
+      const entry={path,size,sha256};files.push(entry);account(entry);local.set(path,{filename,info,handleDev:handleInfo.dev});hashed+=size;
     }
-    if(!sameFile(before,await lstat(folder)))fail('Local directory changed during scan: '+folder);
+    if(!sameDatasetFile(before,await lstat(folder,{bigint:true})))fail('Local directory changed during scan: '+folder);
   }
   await visit(root);directories.sort();files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
   const manifest=Buffer.from(JSON.stringify({schema:1,directories,files}));if(manifest.length>DATA_MANIFEST_LIMIT)fail('Dataset manifest exceeds 64 MiB');
-  const openEntry=async entry=>{const {filename,info}=local.get(entry.path),file=await open(filename,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);if(!sameFile(info,await file.stat())){await file.close();fail('Local file changed after hashing: '+entry.path);}return {
+  const openEntry=async entry=>{const {filename,info,handleDev}=local.get(entry.path),handleInfo={...info,dev:handleDev},file=await open(filename,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);if(!sameDatasetFile(handleInfo,await file.stat({bigint:true}))){await file.close();fail('Local file changed after hashing: '+entry.path);}return {
     read:async offset=>{const buffer=Buffer.alloc(Math.min(DATA_CHUNK,entry.size-offset)),{bytesRead}=await file.read(buffer,0,buffer.length,offset);if(!bytesRead&&offset<entry.size)fail('Local file changed during upload: '+entry.path);return buffer.subarray(0,bytesRead);},
-    verify:async()=>{if(!sameFile(info,await file.stat()))fail('Local file changed during upload: '+entry.path);},close:()=>file.close()};};
-  const verify=async()=>{for(const [folder,info] of directoryStamps)if(!sameFile(info,await lstat(folder)))fail('Local directory changed; no publication was requested');for(const {filename,info} of local.values())if(!sameFile(info,await lstat(filename)))fail('Local file changed; no publication was requested');};
+    verify:async()=>{if(!sameDatasetFile(handleInfo,await file.stat({bigint:true})))fail('Local file changed during upload: '+entry.path);},close:()=>file.close()};};
+  const verify=async()=>{for(const [folder,info] of directoryStamps)if(!sameDatasetFile(info,await lstat(folder,{bigint:true})))fail('Local directory changed; no publication was requested');for(const {filename,info} of local.values())if(!sameDatasetFile(info,await lstat(filename,{bigint:true})))fail('Local file changed; no publication was requested');};
   return {manifest,manifestSha256:createHash('sha256').update(manifest).digest('hex'),files,totalBytes,entries:files.length+directories.length,openEntry,verify};
 }
 async function uploadLocalDataset(call,{machine,name,userId,directory,progress,keyStore}){
