@@ -76,6 +76,7 @@ gpuctl project status
 gpuctl run -g 1 -- python train.py --output /outputs
 gpuctl jobs
 gpuctl logs 任务ID
+gpuctl watch 任务ID
 gpuctl files --job 任务ID
 gpuctl pull --job 任务ID model.pt ./model.pt
 ```
@@ -89,6 +90,20 @@ gpuctl cancel 任务ID
 ```
 
 取消后等待 GPUQ 确认停止，再释放额度；后台子进程一起清理。任务 ID 是平台返回的 UUID，不是旧 GPUQ 的 `J...` 编号。
+
+`gpuctl watch 任务ID` 在当前 SSH/本地终端持续显示轮次、步数、训练自报 ETA，以及异常和最终状态。默认每 5 秒核对；`--interval 10` 调整间隔，`--json` 输出每次变化的 JSON 行。Ctrl+C 只停止查看。断网或节点状态 UNKNOWN 时提示重新连接，不重试提交。完成退出码为 0，失败为 1，取消为 130，状态未知为 3。网页任务表同步显示相同进度；未经适配的训练显示“进度未上报”，仍能查看调度状态与日志。
+
+训练可在主进程（DDP 的 rank 0）使用已挂载的 SDK 上报：
+
+```python
+from gpuq.progress import ProgressReporter
+reporter = ProgressReporter()
+# 每轮完成后：epochs_completed 是已完成轮数，不能用当前轮次推断终态
+reporter.update(phase="train", epochs_completed=epoch + 1,
+                epochs_total=epochs, metrics={"loss": float(loss)})
+```
+
+只上报数值指标和简短说明，不放令牌、个人数据或完整日志。训练上报达到 100% 并不等于调度器已经确认完成；`severity="error"` 只反馈异常，不会自动重启或释放 GPU。保存恢复继续使用原来的 checkpoint 接口，两者独立。
 
 ## 上传自己的数据或使用已授权数据集
 

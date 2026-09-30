@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
-import {mkdtemp,copyFile,symlink,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,writeFile,symlink,rm,readFile} from 'node:fs/promises';
+import {standaloneClient} from '../client-bundle.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -20,7 +21,7 @@ test('one CLI option registry handles old/new flags, aliases, repetition and lit
 
 test('standalone CLI entry point still runs through the installed symlink',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'gpuq-cli-entry-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  await copyFile(new URL('../cli.mjs',import.meta.url),join(dir,'client.mjs'));await symlink(join(dir,'client.mjs'),join(dir,'gpuctl'));
+  await writeFile(join(dir,'client.mjs'),await standaloneClient());await symlink(join(dir,'client.mjs'),join(dir,'gpuctl'));
   const result=spawnSync(process.execPath,[join(dir,'gpuctl'),'--help'],{encoding:'utf8'});
   assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/GPUQ/);
 });

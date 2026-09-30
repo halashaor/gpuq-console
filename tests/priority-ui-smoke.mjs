@@ -6,6 +6,7 @@ import {readFile,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {MACHINES} from '../dist/machines.js';
+import {normalizeProgress} from '../dist/job-progress.js';
 
 const screenshots=process.env.UI_SCREENSHOTS||'/tmp/gpuq-priority-ui',errors=[],blocked=[],calls=[];
 const [machine,legacy]=MACHINES.map(item=>item.id),checkedAt='2026-09-29T08:00:00Z';
@@ -14,6 +15,7 @@ const jobs=[{...baseJob,id:'queue-1',userId:'admin',username:'admin',name:'长�
   {...baseJob,id:'running-1',userId:'member',username:'member',name:'normal-running',state:'RUNNING',schedulerState:'RUNNING',queueReason:'任务正在运行',canSetPriority:false},
   {...baseJob,id:'legacy-1',userId:'admin',username:'admin',name:'legacy-unknown',priority:null,schedulerPriority:null,schedulerCheckedAt:null,queueReason:null,canSetPriority:false},
   {...baseJob,id:'preempted-1',userId:'member',username:'member',name:'idle-preempted',priority:'idle',schedulerPriority:0,state:'CANCELED',schedulerState:'CANCELED',queueReason:'最低任务已让位结束，不重新排队。',preempted:true,canSetPriority:false}];
+jobs[1].progress=normalizeProgress({reported:true,stale:true,snapshot:{sequence:7,phase:'train',epochs_completed:3,epochs_total:10,steps_completed:null,steps_total:null,metrics:{loss:0.25},eta_seconds:65,severity:'error',message:'<script>训练报告异常</script>',updated_at:1}});
 let browser,server;
 try{
   await mkdir(screenshots,{recursive:true});
@@ -54,6 +56,9 @@ try{
   const member=await open('member');await selectMachine(member,machine);await member.locator('#train-form').evaluate(form=>form.closest('details').open=true);
   assert.equal(await member.locator('[name=priority]').inputValue(),'normal');assert.equal(await member.locator('[name=priority] option[value=high]').count(),0);
   assert.equal(await member.locator('[data-job-priority]').count(),0);
+  assert.match(await member.locator('#my-job-table').textContent(),/轮次 3\/10.*30%.*进度停滞/);
+  assert.equal(await member.locator('#my-job-table progress').getAttribute('value'),'30');
+  assert.equal(await member.locator('#my-job-table script').count(),0);
   await member.locator('[name=priority]').selectOption('idle');await member.locator('[name=command]').fill('python keep_my_draft.py');
   assert.match(await member.locator('#priority-note').textContent(),/结束进程/);await refresh(member);
   assert.equal(await member.locator('[name=priority]').inputValue(),'idle');assert.equal(await member.locator('[name=command]').inputValue(),'python keep_my_draft.py');

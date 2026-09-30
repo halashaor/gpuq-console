@@ -4,11 +4,14 @@ import {readFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {PortalService} from './portal-service.mjs';
 import {bridgeClient} from './execution.mjs';
+import {standaloneClient} from './client-bundle.mjs';
 
 const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/workspace.css':'workspace.css','/app.js':'app.js','/model.js':'model.js','/machines.js':'machines.js','/client.js':'client.js','/execution-ui.js':'execution-ui.js','/terminal-ui.js':'terminal-ui.js','/resources-ui.js':'resources-ui.js','/xterm.js':'vendor/xterm.js','/xterm.css':'vendor/xterm.css','/addon-fit.js':'vendor/addon-fit.js'};
 files['/job-diagnostics-ui.js']='job-diagnostics-ui.js';files['/job-diagnostics.css']='job-diagnostics.css';
 files['/scheduling-policy.js']='scheduling-policy.js';
 files['/scheduling-ui.js']='scheduling-ui.js';
+files['/job-progress.js']='job-progress.js';
+files['/job-progress-ui.js']='job-progress-ui.js';
 const mime={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8'};
 const guides={'/guide/user':'./USER_README.md','/guide/admin':'./ADMIN_README.md','/guide/datasets':'./docs/DATASETS.md','/guide/projects':'./docs/PROJECTS.md','/guide/terminal-sessions':'./docs/TERMINAL_SESSIONS.md','/guide/diagnostics':'./docs/JOB_DIAGNOSTICS.md','/guide/ray-resources':'./docs/RAY_RESOURCES.md'};
 files['/datasets-ui.js']='datasets-ui.js';
@@ -63,7 +66,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       }
       if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'GET required'});
       if(path==='/runtime.js'){res.writeHead(200,{...headers,'Content-Type':mime.js});return res.end('globalThis.GPUQ_LOCAL_API=true;globalThis.GPUQ_PRODUCTION=true;');}
-      if(path==='/gpuctl.mjs'||path==='/amaxctl.mjs'){res.writeHead(200,{...headers,'Content-Type':'text/javascript; charset=utf-8','Content-Disposition':'attachment; filename="gpuctl.mjs"'});return res.end((await readFile(new URL('./cli.mjs',import.meta.url),'utf8')).replaceAll('__GPUQ_PUBLIC_ORIGIN__',url.origin));}
+      if(path==='/gpuctl.mjs'||path==='/amaxctl.mjs'){res.writeHead(200,{...headers,'Content-Type':'text/javascript; charset=utf-8','Content-Disposition':'attachment; filename="gpuctl.mjs"'});return res.end(await standaloneClient(url.origin));}
       if(path==='/install.sh'){res.writeHead(200,{...headers,'Content-Type':'text/plain; charset=utf-8'});return res.end((await readFile(new URL('./deploy/install-client.sh',import.meta.url),'utf8')).replaceAll('__GPUQ_PUBLIC_ORIGIN__',url.origin));}
       // Generic repository manuals follow the same public-read rule; no node
       // inventories, credentials or private deployment records are served.

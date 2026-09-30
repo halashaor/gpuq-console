@@ -4,6 +4,7 @@ import {projectCall,projectReference,validateProjectFile} from './projects.mjs';
 import {yieldCapable} from './dist/scheduling-policy.js';
 import {normalizeJobSubmission,createSubmittedJob,datasetReferences} from './job-submission.mjs';
 import {elasticCapable} from './dist/gpu-allocation.js';
+import {applyJobFeedback} from './dist/job-progress.js';
 export {datasetReferences} from './job-submission.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -14,7 +15,7 @@ export const priorityRankCapable=host=>priorityCapable(host)&&host.gpuq.capabili
 const RANKS={idle:0,normal:2,high:4,P0:0,P1:1,P2:2,P3:3,P4:4};
 function rankValue(value){if(typeof value!=='string'||!Object.hasOwn(RANKS,value))fail('排队优先级必须为 P0–P4（或 idle/normal/high）。');return value;}
 function priorityValue(value){if(!PRIORITIES.has(value))fail('优先级必须为 idle、normal 或 high。');return value;}
-function schedulerResult(job,result){
+export function schedulerResult(job,result){
   job.nodeJobId=result.nodeJobId||job.nodeJobId;
   job.state=['PENDING','STARTING','RUNNING','PREEMPTING',...TERMINAL].includes(result.state)?result.state:'UNKNOWN';
   job.assignedIndices=result.assignedIndices||[];job.error=result.error||null;job.checkedAt=new Date().toISOString();
@@ -27,6 +28,7 @@ function schedulerResult(job,result){
   job.schedulerPolicy=result.schedulerPolicy||null;
   job.priorityMutable=result.priorityMutable===true;
   job.preempted=result.preempted===true;
+  applyJobFeedback(job,result);
   if(TERMINAL.has(job.state))job.finishedAt||=job.checkedAt;
 }
 export function bridgeClient(socketPath){
@@ -247,6 +249,19 @@ export async function executionCall(service,principal,operation,args){
     return publicJob(job);
   }
   if(operation==='jobs.logs'){const job=jobById(args.jobId);return service.bridge(job.machine,'logs',{job:job.spec});}
+  if(operation==='jobs.watch'){
+    if(Object.keys(args).some(k=>k!=='jobId'))fail('进度查询参数无效。');
+    const job=jobById(args.jobId);
+    if(!job.machine||TERMINAL.has(job.state))return publicJob(job);
+    authorizedMachine(job.machine);
+    try{
+      const result=await service.bridge(job.machine,'watch',{job:job.spec});
+      // Inspection never admits a new task, cancels it, or creates a retry.
+      // If admission has not reached the node, keep the portal reservation.
+      if(result.nodeJobId){schedulerResult(job,result);service.save();service.pruneTaskNotes?.();}
+      return publicJob(job);
+    }catch(error){return {...publicJob(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
+  }
   if(operation==='jobs.diagnostics'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('诊断参数无效。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
