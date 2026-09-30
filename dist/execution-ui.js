@@ -94,7 +94,7 @@ export function executionUI(store,refresh,toast){
     const release=query('[name=release]');release.disabled=!project||locked||!readyReleases(info).length;
     const custom=query('[name=custom-policy]'),customOn=custom.checked;
     custom.disabled=!available||locked;
-    for(const name of ['queue-rank','yield-policy','restart-policy','checkpointable'])query(`[name=${name}]`).disabled=!available||locked||!customOn;
+    for(const name of ['queue-rank','yield-policy','restart-policy','checkpointable','request-mode'])query(`[name=${name}]`).disabled=!available||locked||!customOn;
     query('#custom-policy-note').textContent=customAvailable()?'等级与让位独立。只抢占严格低等级且明确允许让位的任务；保存失败或超时不会强制杀掉保存任务。':'节点尚未确认训练控制通道，不能提交自定义策略；不会自动降级。';
     const elastic=query('[name=elastic]'),elasticOn=elastic.checked;
     elastic.disabled=!available||locked;
@@ -211,6 +211,7 @@ export function executionUI(store,refresh,toast){
       if(customOn&&!customAvailable())throw Error('节点未接通训练控制通道，不能降级提交。');
       const scheduling=customOn?schedulingFromForm(form,store.principal?.role==='admin'):null;
       const elastic=elasticFromForm(form,Number(form.get('cards')),scheduling);
+      if(scheduling?.mode&&scheduling.mode!=='queue'&&!store.data?.gpuq?.hosts?.find(h=>h.id===machine)?.gpuq?.capabilities?.includes('preempt-opt-in-only-v1'))throw Error('节点未接通抢占模式，请先升级。');
       if(customOn&&!scheduling)throw Error('请重新核对自定义调度选项。');
       const priority=customOn?'normal':trainingPriority(form.get('priority'),store.principal?.role==='admin');if(!customOn&&priority!=='normal'&&!priorityAvailable())throw Error('尚未确认这台服务器支持优先级控制，请刷新核对或明确选择普通优先级。');
       const placement=placementFromForm(form,Number(form.get('cards')),elastic,scheduling,priority);
@@ -223,7 +224,7 @@ export function executionUI(store,refresh,toast){
     if(name==='workspace-project')selectProject(event.target.value);
     if(name==='release'){query('#release-full').textContent=event.target.value;query('#release-full').title=event.target.value;submitKey=crypto.randomUUID();updateControls();}
     if(name==='priority'){submitKey=crypto.randomUUID();updateControls();}
-    if(['custom-policy','queue-rank','yield-policy','restart-policy','checkpointable','elastic','auto-expand'].includes(name)){submitKey=crypto.randomUUID();updateControls();}
+    if(['custom-policy','queue-rank','yield-policy','restart-policy','checkpointable','request-mode','elastic','auto-expand'].includes(name)){submitKey=crypto.randomUUID();updateControls();}
     if(name==='file-area'){query('[name=file-path]').value='.';query('[name=file-run-id]').value='';query('[name=file-run]').value='';query('#workspace-result').textContent='已切换文件区域。';updateControls();}
     if(name==='file-run')query('[name=file-run-id]').value=event.target.value;
   });
