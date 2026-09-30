@@ -4,7 +4,7 @@ import json, os, socketserver, subprocess
 from pathlib import Path
 BASE=Path('/opt/gpuq-console/executor')
 HOSTS={n['id']:n for n in json.loads(Path('/opt/gpuq-console/inventory.json').read_text())['nodes']}
-OPERATIONS={'sync','cancel','logs','diagnostics','watch','priority'}
+OPERATIONS={'offer','admit','cancel-admission','sync','cancel','logs','diagnostics','watch','priority'}
 for prefix,actions in {
     'host':('exec','status','cancel'),
     'files':('list','put','get'),

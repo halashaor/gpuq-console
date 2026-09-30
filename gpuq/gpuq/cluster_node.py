@@ -118,11 +118,14 @@ def offer(coordinator: Any, submission: dict[str, Any], allow_preempt: bool = Tr
 
 
 def node_api(coordinator: Any, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    fields={'submission','allow_preempt'} if operation=='fleet_offer' else {'token','job_id'} if operation=='fleet_retry' else {'token','submission','allow_preempt'}
+    required={'submission'} if operation=='fleet_offer' else {'token','job_id'} if operation=='fleet_retry' else {'token','submission'}
+    if not isinstance(arguments,dict) or not required<=set(arguments) or set(arguments)-fields or ('allow_preempt' in arguments and type(arguments['allow_preempt']) is not bool):raise ValueError('invalid fleet admission arguments')
     def validated() -> dict[str, Any]:
         config = coordinator.config
         return validate_submission(arguments["submission"], len(config.managed_gpu_uuids), max_request_bytes=config.max_request_bytes, managed_gpu_uuids=config.managed_gpu_uuids)
     if operation == "fleet_offer":
-        return offer(coordinator, validated())
+        return offer(coordinator, validated(),arguments.get('allow_preempt',True))
     token = str(uuid.UUID(arguments["token"]))
     key = "fleet.admission." + token
     digest = hashlib.sha256(json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -131,7 +134,17 @@ def node_api(coordinator: Any, operation: str, arguments: dict[str, Any]) -> dic
         if old is not None:
             if old["digest"] != digest:
                 raise ValueError("admission token reused with different payload")
+            if operation=='fleet_cancel_admission' and old['result'].get('accepted') is True:
+                canceled=coordinator._api_cancel({'job_id':old['result']['job_id']})
+                tx.set_setting(key,{**old,'cancel_requested':True})
+                return {**old['result'],'cancel_requested':True,'state':canceled['state']}
             return old["result"]
+        if operation=='fleet_cancel_admission':
+            # A durable rejection fences any late same-token admit, including
+            # an earlier SSH request whose response never reached the caller.
+            validated()
+            result={'accepted':False,'canceled':True,'reason':'canceled before admission'}
+            tx.set_setting(key,{'digest':digest,'result':result});return result
         if operation == "fleet_retry":
             result = coordinator._api_retry({"job_id": arguments["job_id"]})
             tx.set_setting(key, {"digest": digest, "result": result})

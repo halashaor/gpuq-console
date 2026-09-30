@@ -33,6 +33,7 @@ if a.runtime_profile=='ray-p0':
         raise SystemExit('CPU/memory/PID enforcement preflight failed; existing runner and scheduler are unchanged.\n'+(error.stderr or '')+'\nSee docs/RAY_RESOURCES.md; administrator confirmation is required before refreshing an active user manager.')
 os.umask(0o077);home=Path.home();dest=home/'.local/libexec/gpuq-console';dest.mkdir(parents=True,exist_ok=True)
 root=Path(node['workspaceRoot']);root.mkdir(parents=True,exist_ok=True,mode=0o700)
+(root/'jobs').mkdir(exist_ok=True,mode=0o700)
 scheduler=Path(node['gpuqRoot']);config=scheduler/'config.json';binary=home/'bin/gpu'
 if not config.exists():
     if not a.initialize_gpuq:raise SystemExit('GPUQ absent: review and rerun with --initialize-gpuq')

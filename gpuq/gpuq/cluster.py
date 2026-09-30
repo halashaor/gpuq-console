@@ -54,7 +54,7 @@ def local_rpc(scope: str, operation: str, payload: dict[str, Any], config_path: 
         except (ValueError, OSError, subprocess.SubprocessError, ProtocolError) as exc:
             return {"kind": "unavailable", "reason": str(exc)}
     config = Config.from_json(config_path)
-    if operation not in {"fleet_admit", "fleet_retry", "job_watch", "cancel"}:
+    if operation not in {"fleet_admit", "fleet_retry", "fleet_cancel_admission", "job_watch", "cancel"}:
         raise ValueError("unsupported node operation")
     return Client(config.socket_path, timeout=20).call(operation, payload)
 

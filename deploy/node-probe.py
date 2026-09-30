@@ -249,7 +249,7 @@ def probe_gpuq():
             output = {
                 "connected": True, "health": daemon.get("health", "unknown"),
                 "observeOnly": daemon.get("observe_only"),
-                "capabilities": [c for c in (daemon.get('capabilities') if isinstance(daemon.get('capabilities'), list) else []) if c in ('priority-policy-v1','preempt-idle-only-v1','priority-rank-v1','preempt-opt-in-only-v1','elastic-batch-v1','gpu-placement-v1','gpu-sharing-v1')],
+                "capabilities": [c for c in (daemon.get('capabilities') if isinstance(daemon.get('capabilities'), list) else []) if c in ('priority-policy-v1','preempt-idle-only-v1','priority-rank-v1','preempt-opt-in-only-v1','elastic-batch-v1','gpu-placement-v1','gpu-sharing-v1','fleet-admission-v2')],
                 "schedulableIndices": daemon.get("schedulable_gpu_indices", []),
                 "jobs": [{key: job.get(key) for key in allowed} for job in jobs[:100] if isinstance(job, dict)],
                 "limit": 100,
@@ -267,6 +267,7 @@ def probe_gpuq():
                             if native in output['capabilities']:output['capabilities'].append(console)
                         if policy.hami_ready(CONFIG,helper.parent):output['capabilities'].append('console-hami-v1')
                         if policy.hami_ready(CONFIG,helper.parent,50):output['capabilities'].append('console-hami-sm-v1')
+                    if 'fleet-admission-v2' in output['capabilities'] and policy.fleet_ready(CONFIG,helper.parent):output['capabilities'].append('console-fleet-v1')
         except (ValueError, OSError, subprocess.SubprocessError):
             output["error"] = "GPUQ status unavailable"
     else:

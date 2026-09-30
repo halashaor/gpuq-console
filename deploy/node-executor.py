@@ -17,6 +17,7 @@ DATASET_UPLOADS=None
 PROJECT_OPS=None
 ADMIN_COMMAND=None
 HOST_COMMAND_CAPABILITY='host-command-v1'
+FLEET_ADMISSION_PROTOCOL=1
 DIAGNOSTICS=None
 policy_module=importlib.util.spec_from_file_location('gpuq_console_scheduling',HERE/'scheduling-policy.py')
 SCHEDULING=importlib.util.module_from_spec(policy_module);policy_module.loader.exec_module(SCHEDULING)
@@ -344,6 +345,46 @@ def workspace(user):
     path.mkdir(parents=True,exist_ok=True,mode=0o700)
     return path
 
+
+def native_submit_arguments(job,policy,fleet=False):
+    allocation=SCHEDULING.allocation_arguments(job)
+    if fleet and job.get('elastic'):
+        allocation[allocation.index('-g')+1]=str(min(job['cards'],CONFIG.get('cards',job['cards'])))
+    cwd=ROOT/'jobs' if fleet else workspace(job['userId'])
+    extra=[]
+    if fleet:
+        # These are the existing immutable storage layouts, not caller paths.
+        owner=hashlib.sha256(job['userId'].encode()).hexdigest()
+        if job.get('project'):
+            release=ROOT/'projects-v2'/owner/job['project']/'releases'/job['release']
+            inputs=[str(release/name) for name in ('code','env')]
+        else:inputs=[str(ROOT/'users'/owner[:32])]
+        for ref in dataset_refs(job):inputs.append(str(Path(CONFIG.get('datasets',{}).get('root','/data2/datasets'))/'ready'/ref['dataset']/ref['version']/'data'))
+        extra=['--env','GPU_SYNC_INPUT_PATHS='+json.dumps(sorted(inputs),separators=(',',':'))]
+    return ['submit',*allocation,*SCHEDULING.submit_arguments(policy),*extra,'-n','portal-'+job['id'][:8],'-u',gpuq_owner(job),'--cwd',str(cwd),'--submit-key',job['id'],'--','/usr/bin/python3',str(HERE/'sandbox-runner.py'),job['id']]
+
+
+def submission_ready(job,policy,fleet=False):
+    if policy['kind']!='legacy':priority_capability()
+    if policy['preempt_opt_in_only'] and 'preempt-opt-in-only-v1' not in gpu('status').get('daemon',{}).get('capabilities',[]):raise ValueError('Requester opt-in scope capability unavailable')
+    if policy['kind']=='explicit' and not SCHEDULING.ready(CONFIG,HERE):raise ValueError('Training control channel is not ready; no submission attempted')
+    if 'elastic' in job and (not SCHEDULING.allocation_ready(CONFIG,HERE) or 'elastic-batch-v1' not in gpu('status').get('daemon',{}).get('capabilities',[])):raise ValueError('Elastic scheduler/control channel is not ready; no submission attempted')
+    if 'placement' in job:
+        placement=job['placement'];caps=gpu('status').get('daemon',{}).get('capabilities',[])
+        if not SCHEDULING.allocation_ready(CONFIG,HERE,2) or 'gpu-placement-v1' not in caps or placement['shared'] and 'gpu-sharing-v1' not in caps:raise ValueError('GPU placement/sharing channel is not ready; no submission attempted')
+        if placement.get('hami') and not SCHEDULING.hami_ready(CONFIG,HERE,placement['smPercent']):raise ValueError('HAMi runtime is not ready; no submission attempted')
+    if fleet and ('fleet-admission-v2' not in gpu('status').get('daemon',{}).get('capabilities',[]) or not SCHEDULING.fleet_ready(CONFIG,HERE)):raise ValueError('Fleet admission/cancellation channel is not ready')
+
+
+def node_job_result(job,node_id,data,require_drain=False):
+    state=data.get('job',data);attempts=data.get('attempts',[])
+    assigned=attempts[0].get('gpu_indices',[]) if attempts and state['state'] not in ('SUCCEEDED','FAILED','CANCELED','LOST') else []
+    result={'nodeJobId':node_id,'state':state['state'],'assignedIndices':assigned,**scheduling_status(job,data)}
+    if state['state'] in ('SUCCEEDED','FAILED','CANCELED'):
+        if data.get('leases') or require_drain and not isinstance(data.get('leases'),list):return {**result,'state':'UNKNOWN','error':'Job termination is not fully confirmed; native leases retained'}
+        if dataset_refs(job) and not release_datasets(job,data):return {**result,'state':'UNKNOWN','error':'Job termination is not fully confirmed; dataset leases retained'}
+    return result
+
 def file_op(operation,args,root=None):
     root=workspace(args['userId']) if root is None else root
     path=args.get('path','.')
@@ -566,6 +607,14 @@ def terminal_op(operation,args):
             return result
 
 def process(operation,args):
+    if operation=='offer':
+        if not isinstance(args,dict) or not {'job'}<=set(args) or set(args)-{'job','allowPreempt'} or type(args.get('allowPreempt',False)) is not bool:raise ValueError('Invalid fleet offer fields')
+        job=args['job'];policy=validate_job(job,readonly=True);submission_ready(job,policy,fleet=True)
+        spec=ROOT/'jobs'/(job['id']+'.json')
+        if spec.exists() and json.loads(spec.read_text())!=job:raise ValueError('Job identity mismatch')
+        command=native_submit_arguments(job,policy,fleet=True)
+        flags=['--offer-only',*(['--admission-preempt'] if args.get('allowPreempt') else [])]
+        return gpu(*command[:1],*flags,*command[1:])
     if operation in ('diagnostics','watch'):
         if not isinstance(args,dict) or set(args)!={'job'}:raise ValueError('Invalid diagnostic operation fields')
         job=args['job'];validate_job(job,readonly=True)
@@ -578,6 +627,9 @@ def process(operation,args):
         if operation=='diagnostics':return job_diagnostics(job,data)
         state=data.get('job',data);attempts=data.get('attempts',[])
         assigned=attempts[0].get('gpu_indices',[]) if attempts and state.get('state') not in ('SUCCEEDED','FAILED','CANCELED','LOST') else []
+        if row and state.get('state') in ('SUCCEEDED','FAILED','CANCELED') and data.get('leases'):
+            return {'nodeJobId':row[0],'state':'UNKNOWN','assignedIndices':[],
+                    'error':'Job termination awaits native lease cleanup',**scheduling_status(job,data)}
         if row and state.get('state') in ('SUCCEEDED','FAILED','CANCELED') and dataset_refs(job) and (ROOT/'jobs'/(job['id']+'.datasets.json')).exists():
             # The periodic lifecycle reconciliation must confirm process
             # cleanup and release leases. A viewer cannot release them.
@@ -602,8 +654,11 @@ def process(operation,args):
         return terminal_op(operation,args)
     if operation.startswith('files.') and operation in ('files.list','files.put','files.get'):
         return projects().files(operation,args) if args.get('project') else file_op(operation,args)
-    if operation not in ('sync','cancel','logs','priority'):raise ValueError('Unknown operation')
-    if not isinstance(args,dict) or set(args)-({'job','priority','expected','rankOnly'} if operation=='priority' else {'job'}):raise ValueError('Invalid job operation fields')
+    fleet=operation in ('admit','cancel-admission')
+    if operation not in ('sync','cancel','logs','priority','admit','cancel-admission'):raise ValueError('Unknown operation')
+    fields={'job','admissionKey','allowPreempt'} if fleet else {'job','priority','expected','rankOnly'} if operation=='priority' else {'job'}
+    if not isinstance(args,dict) or set(args)-fields:raise ValueError('Invalid job operation fields')
+    if fleet and (not isinstance(args.get('admissionKey'),str) or not UUID.fullmatch(args['admissionKey']) or type(args.get('allowPreempt',False)) is not bool):raise ValueError('Invalid admission identity')
     job=args['job'];policy=validate_job(job);jid=job['id']
     (ROOT/'jobs').mkdir(parents=True,exist_ok=True,mode=0o700)
     with open(ROOT/'jobs'/f'{jid}.lock','a') as lock:
@@ -613,11 +668,38 @@ def process(operation,args):
             if json.loads(spec.read_text())!=job:raise ValueError('Job identity mismatch')
         else:
             with open(spec,'x') as f:json.dump(job,f);f.flush();os.fsync(f.fileno())
+        receipt=ROOT/'jobs'/f'{jid}.admission.json'
+        if not fleet and operation in ('sync','cancel') and receipt.exists():
+            previous=json.loads(receipt.read_text());args={**args,'admissionKey':previous['key'],'allowPreempt':previous['allowPreempt']};fleet=True;operation='cancel-admission' if operation=='cancel' else 'admit'
         # GPUQ is the source of truth for dispatch idempotency, including SSH failures.
         with closing(sqlite3.connect(f'file:{CONFIG["database"]}?mode=ro',uri=True)) as db:
             row=db.execute('SELECT id FROM jobs WHERE submit_key=?',(jid,)).fetchone()
         canceled=ROOT/'jobs'/f'{jid}.canceled'
         attempted=ROOT/'jobs'/f'{jid}.dataset-dispatch-attempted'
+        if fleet:
+            previous=json.loads(receipt.read_text()) if receipt.exists() else None
+            marker={'key':args['admissionKey'],'allowPreempt':args.get('allowPreempt',False)}
+            if previous and (previous['key']!=marker['key'] or previous['allowPreempt']!=marker['allowPreempt']) and previous.get('accepted') is not False:raise ValueError('Previous admission outcome is unknown; retry its original token')
+            atomic_json(receipt,marker)
+            submission_ready(job,policy,fleet=True)
+            cancel=operation=='cancel-admission' or canceled.exists()
+            if cancel:canceled.touch(mode=0o600,exist_ok=True)
+            if not cancel and not row:
+                if job.get('project'):
+                    projects().store.release(job['userId'],job['project'],job['release']);projects().store.run_paths(job['userId'],job['project'],job['release'],jid)
+                if dataset_refs(job):acquire_datasets(job);atomic_json(attempted,{'jobId':jid})
+            command=native_submit_arguments(job,policy,fleet=True)
+            flags=['--admission-token',marker['key'],*(['--admission-preempt'] if marker['allowPreempt'] else []),*(['--cancel-admission'] if cancel else [])]
+            admitted=gpu(*command[:1],*flags,*command[1:])
+            if type(admitted.get('accepted')) is not bool:raise ValueError('Admission response has no durable decision')
+            atomic_json(receipt,{**marker,'accepted':admitted['accepted']})
+            if admitted['accepted'] is False:
+                if row:raise ValueError('Rejected admission conflicts with an existing native job')
+                release_datasets(job,never_dispatched=True)
+                return {'accepted':False,'state':'CANCELED' if cancel or admitted.get('canceled') else 'REJECTED','reason':admitted.get('reason')}
+            node_id=admitted.get('job_id')
+            if not isinstance(node_id,str) or row and row[0]!=node_id:raise ValueError('Admission job identity mismatch')
+            return {'accepted':True,**node_job_result(job,node_id,gpu('show',node_id),require_drain=True)}
         if not row:
             if operation=='priority':raise ValueError('Job is not yet registered with the scheduler; no priority was changed')
             if operation=='cancel' or canceled.exists():
@@ -626,15 +708,7 @@ def process(operation,args):
                 release_datasets(job,never_dispatched=True)
                 return {'state':'CANCELED'}
             if operation=='logs':return job_log_result(job,{'job':{'state':'NOT_SUBMITTED'},'attempts':[]},'任务尚未提交到 GPUQ。')
-            if policy['kind']!='legacy':priority_capability()
-            if policy['preempt_opt_in_only'] and 'preempt-opt-in-only-v1' not in gpu('status').get('daemon',{}).get('capabilities',[]):raise ValueError('Requester opt-in scope capability unavailable')
-            if policy['kind']=='explicit' and not SCHEDULING.ready(CONFIG,HERE):raise ValueError('Training control channel is not ready; no submission attempted')
-            if 'elastic' in job:
-                if not SCHEDULING.allocation_ready(CONFIG,HERE) or 'elastic-batch-v1' not in gpu('status').get('daemon',{}).get('capabilities',[]):raise ValueError('Elastic scheduler/control channel is not ready; no submission attempted')
-            if 'placement' in job:
-                placement=job['placement'];caps=gpu('status').get('daemon',{}).get('capabilities',[])
-                if not SCHEDULING.allocation_ready(CONFIG,HERE,2) or 'gpu-placement-v1' not in caps or placement['shared'] and 'gpu-sharing-v1' not in caps:raise ValueError('GPU placement/sharing channel is not ready; no submission attempted')
-                if placement.get('hami') and not SCHEDULING.hami_ready(CONFIG,HERE,placement['smPercent']):raise ValueError('HAMi runtime is not ready; no submission attempted')
+            submission_ready(job,policy)
             if job.get('project'):
                 projects().store.release(job['userId'],job['project'],job['release'])
                 projects().store.run_paths(job['userId'],job['project'],job['release'],jid)
@@ -643,8 +717,7 @@ def process(operation,args):
                 # A timed-out submit must not allow cancellation to release a
                 # lease while the scheduler may still accept the request.
                 atomic_json(attempted,{'jobId':jid})
-            scheduling=SCHEDULING.submit_arguments(policy)
-            result=gpu('submit',*SCHEDULING.allocation_arguments(job),*scheduling,'-n','portal-'+jid[:8],'-u',gpuq_owner(job),'--cwd',str(workspace(job['userId'])),'--submit-key',jid,'--','/usr/bin/python3',str(HERE/'sandbox-runner.py'),jid)
+            result=gpu(*native_submit_arguments(job,policy))
             node_id=result['job_id']
         else:node_id=row[0]
         data=gpu('show',node_id);state=data.get('job',data)
@@ -663,11 +736,7 @@ def process(operation,args):
             return job_log_result(job,data,run([CONFIG['gpu'],'logs','-n','200',node_id])[-200000:])
         if operation=='cancel' and state['state'] not in ('SUCCEEDED','FAILED','CANCELED'):
             gpu('cancel',node_id);data=gpu('show',node_id);state=data.get('job',data)
-        attempts=data.get('attempts',[])
-        assigned=attempts[0].get('gpu_indices',[]) if attempts and state['state'] not in ('SUCCEEDED','FAILED','CANCELED','LOST') else []
-        if dataset_refs(job) and state['state'] in ('SUCCEEDED','FAILED','CANCELED') and not release_datasets(job,data):
-            return {'nodeJobId':node_id,'state':'UNKNOWN','assignedIndices':assigned,'error':'Job termination is not fully confirmed; dataset leases retained'}
-        return {'nodeJobId':node_id,'state':state['state'],'assignedIndices':assigned,**scheduling_status(job,data)}
+        return node_job_result(job,node_id,data)
 
 if __name__=='__main__':
     os.umask(0o077)

@@ -9,6 +9,16 @@ from pathlib import Path
 PRIORITY_PRESETS = {'idle': (0, 'now'), 'normal': (2, 'never'), 'high': (4, 'never')}
 
 
+def fleet_ready(config,here):
+    import ast
+    from pathlib import Path
+    try:
+        tree=ast.parse((here/'node-executor.py').read_text())
+        versions=[node.value.value for node in tree.body if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='FLEET_ADMISSION_PROTOCOL' for t in node.targets) and isinstance(node.value,ast.Constant)]
+        return len(versions)==1 and type(versions[0]) is int and versions[0]==1 and (Path(config['root'])/'jobs').is_dir()
+    except (KeyError,OSError,SyntaxError,TypeError):return False
+
+
 def ready(config, here):
     try:
         spec=importlib.util.spec_from_file_location('gpuq_training_control',here/'training-control.py')

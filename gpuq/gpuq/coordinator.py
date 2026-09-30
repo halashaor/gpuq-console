@@ -4544,7 +4544,7 @@ class Coordinator:
             if operation in {"sync_begin", "sync_finish"}:
                 from .sync import node_api as sync_node_api
                 return sync_node_api(self, operation, arguments)
-            if operation in {"fleet_offer", "fleet_admit", "fleet_retry"}:
+            if operation in {"fleet_offer", "fleet_admit", "fleet_retry", "fleet_cancel_admission"}:
                 from .cluster_node import node_api
                 return node_api(self, operation, arguments)
             if operation == "submit":
@@ -4786,7 +4786,7 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1"],
+                "capabilities": ["priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "fleet-admission-v2"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,

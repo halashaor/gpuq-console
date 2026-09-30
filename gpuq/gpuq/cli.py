@@ -1091,6 +1091,13 @@ def prepare_submission(args: argparse.Namespace) -> tuple[Config, dict[str, Any]
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
+    token=getattr(args,'admission_token',None)
+    offer_only=bool(getattr(args,'offer_only',False));cancel_admission=bool(getattr(args,'cancel_admission',False))
+    allow_preempt=bool(getattr(args,'admission_preempt',False))
+    if offer_only and token or cancel_admission and (not token or offer_only) or allow_preempt and not (token or offer_only) or (token or offer_only) and getattr(args,'watch',False):raise ValueError('incompatible fleet offer/admission options')
+    if token:
+        try:token=str(uuid.UUID(token))
+        except (ValueError,AttributeError) as exc:raise ValueError('admission token must be a UUID') from exc
     config, submission = prepare_submission(args)
     watch_after_submit = bool(getattr(args, "watch", False))
     client = Client(
@@ -1098,7 +1105,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
         max_request_bytes=config.max_request_bytes,
     )
     try:
-        result = client.call("submit", submission, request_id=submission["submit_key"])
+        operation='fleet_offer' if offer_only else 'fleet_cancel_admission' if cancel_admission else 'fleet_admit' if token else 'submit'
+        payload={'submission':submission,'allow_preempt':allow_preempt,**({'token':token} if token else {})} if token or offer_only else submission
+        result = client.call(operation, payload, request_id=token or submission["submit_key"])
     except ProtocolError as exc:
         raise ProtocolError(
             f"{exc}; submission key={submission['submit_key']} "
@@ -1404,6 +1413,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="how this job may obtain GPUs from lower-priority managed jobs",
     )
     submit.add_argument("--checkpointable", action="store_true")
+    submit.add_argument('--offer-only',action='store_true',help='read-only local fleet admission offer; does not submit or reserve')
+    submit.add_argument('--admission-token',help='durable fleet admission UUID; replay only on this node with identical arguments')
+    submit.add_argument('--admission-preempt',action='store_true',help='allow the offer/admission to use eligible lower-priority volunteers')
+    submit.add_argument('--cancel-admission',action='store_true',help='cancel the same admission token, including a not-yet-accepted request')
     submit.add_argument("--yield", dest="yield_policy", choices=["legacy", "never", "now", "save"], default="legacy",
                         help="victim policy: legacy behavior, protected, immediate yield, or checkpoint-only yield")
     submit.add_argument("--preempt-idle-only", action="store_true",
