@@ -32,6 +32,7 @@ gpuctl project publish           Freeze code + private environment; wait for REA
 gpuctl run -g 2 -- python train.py
 gpuctl jobs / logs JOB / cancel JOB
 gpuctl watch JOB                 Watch progress / completion / failure over SSH
+gpuctl notify JOB on|off|status  Opt into your configured Telegram destination
 gpuctl diagnostics JOB --json    Persistent bounded worker logs, exits and resource counters
 gpuctl run --priority idle -g 1 -- python train.py
 gpuctl run --rank P1 --yield save --checkpointable --restart-policy on-preempt -- python train.py
@@ -215,6 +216,7 @@ async function main(){
     if(positionals.length!==2||training.length||options.machines.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','json','url','session-file','interval'].includes(k)))fail('Usage: watch JOB [--interval 1..60] [--json]');
     if(options.interval!==undefined&&(!Number.isFinite(Number(options.interval))||Number(options.interval)<1||Number(options.interval)>60))fail('--interval must be 1–60 seconds');
   }
+  if(positionals[0]==='notify'&&(positionals.length!==3||!['on','off','status'].includes(positionals[2])||training.length||options.machines.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','json','url','session-file'].includes(k))))fail('Usage: notify JOB on|off|status');
   if(options.priority&&!['idle','normal','high'].includes(options.priority))fail('Priority must be idle, normal or high');
   if(options.priority&&positionals[0]!=='run')fail('--priority is only valid for run; use gpuctl priority JOB idle|normal|high');
   if(['cwd','timeout','detach'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='exec')fail('--cwd, --timeout and --detach are only valid for exec');
@@ -456,6 +458,10 @@ async function main(){
       try{process.exitCode=await watchJob(call,positionals[1],{interval:options.interval===undefined?5:Number(options.interval),json:options.json===true,signal:controller.signal});}
       finally{process.off('SIGINT',stop);process.off('SIGTERM',stop);}return;
     }
+    else if(command==='notify'&&positionals.length===3){
+      if(!['on','off','status'].includes(positionals[2]))fail('Use notify JOB on|off|status');
+      result=(await call('notifications.job',{jobId:positionals[1],...(positionals[2]==='status'?{}:{enabled:positionals[2]==='on'})})).result;
+    }
     else if(['logs','cancel'].includes(command)&&positionals.length===2)result=(await call(command==='logs'?'jobs.logs':'jobs.cancel',{jobId:positionals[1]})).result;
     else if(command==='files'&&positionals.length<=3)result=(await call('files.list',{machine:positionals[1],path:positionals[2]||'.',...fileArgs(positionals[1])})).result;
     else if(command==='upload'&&positionals.length>=3&&positionals.length<=4){
@@ -533,6 +539,7 @@ async function main(){
   if(command==='notes'){for(const n of result.notes)console.log(`${n.id} · ${n.author.username} · ${n.jobId||'非任务留言'}\n${n.body}\n`);if(!result.notes.length)console.log('暂无留言。');if(result.nextCursor)console.log('更多留言可通过 API before='+result.nextCursor+' 查询。');return;}
   if(command==='note'||command==='note-delete'){console.log(result.deleted?`留言 ${result.id} 已删除。`:`留言 ${result.note?.id||result.id} 已保存。`);return;}
   if(command==='priority'){console.log(`任务 ${result.id}：优先级 ${result.priority||'normal'}${result.priorityPending?'（等待节点确认）':''}`);return;}
+  if(command==='notify'){console.log(`Telegram：${result.configured?'收件人已配置':'收件人尚未配置'} · ${result.enabled?'通知已开启':'通知关闭'} · 待发 ${result.pending} · 失败 ${result.failed}`);return;}
   if(command==='logs'){process.stdout.write(result.text+(result.text.endsWith('\n')?'':'\n'));return;}
   if(command==='cancel'){console.log(`任务 ${result.id}：${result.state}${result.cancelRequested?'（已请求取消，等待节点确认）':''}`);return;}
   if(command==='upload'){console.log(`已上传 ${result.uploaded} 个文件到 ${result.machine} 的${result.project?'项目 '+result.project+' 草稿':'个人工作区'}。${result.skipped?'跳过 '+result.skipped+' 项。':''}`);return;}

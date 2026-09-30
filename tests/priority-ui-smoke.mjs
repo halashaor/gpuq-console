@@ -16,6 +16,7 @@ const jobs=[{...baseJob,id:'queue-1',userId:'admin',username:'admin',name:'长�
   {...baseJob,id:'legacy-1',userId:'admin',username:'admin',name:'legacy-unknown',priority:null,schedulerPriority:null,schedulerCheckedAt:null,queueReason:null,canSetPriority:false},
   {...baseJob,id:'preempted-1',userId:'member',username:'member',name:'idle-preempted',priority:'idle',schedulerPriority:0,state:'CANCELED',schedulerState:'CANCELED',queueReason:'最低任务已让位结束，不重新排队。',preempted:true,canSetPriority:false}];
 jobs[1].progress=normalizeProgress({reported:true,stale:true,snapshot:{sequence:7,phase:'train',epochs_completed:3,epochs_total:10,steps_completed:null,steps_total:null,metrics:{loss:0.25},eta_seconds:65,severity:'error',message:'<script>训练报告异常</script>',updated_at:1}});
+jobs[1].notifications={configured:true,enabled:false,pending:0,failed:0};
 let browser,server;
 try{
   await mkdir(screenshots,{recursive:true});
@@ -43,6 +44,10 @@ try{
         if(role!=='admin'||!job?.canSetPriority){status=403;error='排队优先级不可修改';}
         else if(job.priority!==args.expectedPriority){status=409;error='优先级已改变，请刷新并重新选择。';}
         else{job.priority=args.priority;job.schedulerPriority={idle:0,normal:2,high:4}[args.priority];result=job;}
+      }else if(operation==='notifications.job'){
+        const job=jobs.find(item=>item.id===args.jobId);
+        if(job?.userId!==role){status=403;error='只能订阅自己的任务';}
+        else{job.notifications={...job.notifications,enabled:args.enabled};result=job.notifications;}
       }else if(operation!=='state'){status=400;error='Unexpected mock operation: '+operation;}
       return route.fulfill({status,contentType:'application/json',body:JSON.stringify(error?{error}:{result,state:state(),principal})});
     });
@@ -59,6 +64,11 @@ try{
   assert.match(await member.locator('#my-job-table').textContent(),/轮次 3\/10.*30%.*进度停滞/);
   assert.equal(await member.locator('#my-job-table progress').getAttribute('value'),'30');
   assert.equal(await member.locator('#my-job-table script').count(),0);
+  let notice=responseFor(member,'notifications.job');await member.locator('[data-job-notify="running-1"]').click();await notice;
+  await member.waitForFunction(()=>document.querySelector('[data-job-notify="running-1"]').textContent.includes('关闭'));
+  assert.deepEqual(calls.findLast(item=>item.operation==='notifications.job').args,{jobId:'running-1',enabled:true});
+  notice=responseFor(member,'notifications.job');await member.locator('[data-job-notify="running-1"]').click();await notice;
+  await member.waitForFunction(()=>document.querySelector('[data-job-notify="running-1"]').textContent.includes('开启'));
   await member.locator('[name=priority]').selectOption('idle');await member.locator('[name=command]').fill('python keep_my_draft.py');
   assert.match(await member.locator('#priority-note').textContent(),/结束进程/);await refresh(member);
   assert.equal(await member.locator('[name=priority]').inputValue(),'idle');assert.equal(await member.locator('[name=command]').inputValue(),'python keep_my_draft.py');
