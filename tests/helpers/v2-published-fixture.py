@@ -13,10 +13,11 @@ source = base / 'approved'
 source.mkdir()
 (source / 'sample.txt').write_text('original sample')
 version = None
+owners = json.loads(sys.argv[2]) if len(sys.argv) > 2 else ['alice']
 for kind in ('cache', 'warehouse'):
     cache = module.DatasetCache(base / kind, sources={'original': source}, reserve_bytes=0)
-    version = cache.register_source(module.Principal('operator', True), 'images', 'original', ['alice'])['version']
-    cache.materialize(module.Principal('alice', False), 'images', version)
+    version = cache.register_source(module.Principal('operator', True), 'images', 'original', owners)['version']
+    cache.materialize(module.Principal(owners[0], False), 'images', version)
     if kind == 'cache':
         with cache._locked():
             tier = cache._tier('images', version)

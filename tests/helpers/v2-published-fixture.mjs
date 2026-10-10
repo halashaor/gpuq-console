@@ -17,10 +17,10 @@ async function writable(path) {
   }
 }
 
-export async function publishedFixture(t) {
+export async function publishedFixture(t, {owners = ['alice']} = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'v2-published-'));
   t.after(async () => {await writable(directory); await rm(directory, {recursive: true, force: true});});
-  const {stdout} = await run(python, ['-B', fileURLToPath(new URL('./v2-published-fixture.py', import.meta.url)), directory]);
+  const {stdout} = await run(python, ['-B', fileURLToPath(new URL('./v2-published-fixture.py', import.meta.url)), directory, JSON.stringify(owners)]);
   const {version} = JSON.parse(stdout);
   const roots = ['cache', 'warehouse'].map(kind => ({kind, root: join(directory, kind)}));
   const managed = new ManagedSourceReader({machineId: 'node-1', roots, python});

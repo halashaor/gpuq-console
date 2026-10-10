@@ -33,6 +33,23 @@ export class ManagedSourceReader {
   }
 
   async inspect(request, {actor} = {}) {
+    const result = await this.#call('inspect', request, actor);
+    if (result.availability === 'available' && Object.keys(result).length === 4) return {availability: 'available'};
+    if (result.availability === 'unavailable' && result.reason === 'not-ready' && Object.keys(result).length === 5) return {availability: 'unavailable', reason: 'not-ready'};
+    throw new ApplicationError('SOURCE_UNAVAILABLE');
+  }
+
+  async exportAccess(request, {actor} = {}) {
+    const result = await this.#call('export-access', request, actor);
+    if (Object.keys(result).length !== 5 || !Array.isArray(result.legacyOwners) || !result.legacyOwners.length
+      || result.legacyOwners.length > 10000 || !result.legacyOwners.every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/.test(id))
+      || new Set(result.legacyOwners).size !== result.legacyOwners.length || !/^[a-f0-9]{64}$/.test(result.snapshotId)) {
+      throw new ApplicationError('SOURCE_UNAVAILABLE');
+    }
+    return {machineId: request.machineId, source: {...request.source}, legacyOwners: [...result.legacyOwners], snapshotId: result.snapshotId};
+  }
+
+  async #call(operation, request, actor) {
     if (request.machineId !== this.machineId) throw new ApplicationError('SOURCE_NODE_MISMATCH');
     if (!actor?.id) throw new ApplicationError('UNAUTHENTICATED');
     const source = request.source, config = this.#roots.get(source.kind);
@@ -43,16 +60,14 @@ export class ManagedSourceReader {
       running.child.stdin.once('error', error => {inputError = error;});
       const coordinatorVersion = this.#coordinatorVersions.has(`${source.kind}/${source.datasetId}/${source.version}`)
         ? {dataset: source.datasetId, version: source.version} : null;
-      running.child.stdin.end(JSON.stringify({config: {...config, coordinatorVersion}, request: {
+      running.child.stdin.end(JSON.stringify({operation, config: {...config, coordinatorVersion}, request: {
         userId: actor.id, dataset: source.datasetId, version: source.version, kind: source.kind,
       }}));
       const {stdout} = await running;
       if (inputError) throw inputError;
       const result = JSON.parse(stdout).result;
       if (result?.dataset !== source.datasetId || result?.version !== source.version || result?.kind !== source.kind) throw new Error('Managed source identity mismatch');
-      if (result.availability === 'available' && Object.keys(result).length === 4) return {availability: 'available'};
-      if (result.availability === 'unavailable' && result.reason === 'not-ready' && Object.keys(result).length === 5) return {availability: 'unavailable', reason: 'not-ready'};
-      throw new Error('Invalid managed observation');
+      return result;
     } catch (cause) {
       let code;
       try {code = JSON.parse(cause.stdout).error?.code;} catch {}

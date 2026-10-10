@@ -36,6 +36,24 @@ class LegacyCacheReader:
                 'availability': 'available' if status['state'] == 'READY' else 'unavailable',
                 **({} if status['state'] == 'READY' else {'reason': 'not-ready'})}
 
+    def export_access(self, *, user_id, dataset, version, kind):
+        """Legacy ACL snapshot for migration review, never permission delegation."""
+        import hashlib
+        if kind != self._kind:
+            raise ValueError('Managed source differs from configured kind')
+        actor = self._module.Principal(user_id, False)
+        _, identity = self._cache._record_snapshot(actor, dataset, version, _read_only=True)
+        with self._cache._locked():
+            self._cache._check_snapshot(actor, dataset, version, identity, _read_only=True)
+            fence = self._cache._retirement_fence(dataset, version)
+            if fence is not None and fence['state'] != 'RESTORED':
+                raise self._module.CacheError('Cannot export retiring version authorization')
+            owners = self._cache._owners(self._cache._dataset(actor, dataset)['owners'])
+            snapshot = dict(dataset=dataset, version=version, kind=kind, owners=owners,
+                            root=list(self._cache._root_identity), registration=list(identity))
+            digest = hashlib.sha256(self._module._json_bytes(snapshot)).hexdigest()
+        return dict(dataset=dataset, version=version, kind=kind, legacyOwners=owners, snapshotId=digest)
+
 
 def main():
     """Private local process protocol; configuration comes from the node adapter."""
@@ -50,7 +68,7 @@ def main():
         if len(raw) > 8192:
             raise ValueError('Request too large')
         envelope = json.loads(raw)
-        if not isinstance(envelope, dict) or set(envelope) != {'config', 'request'}:
+        if not isinstance(envelope, dict) or set(envelope) != {'config', 'request', 'operation'}:
             raise ValueError('Invalid inspection envelope')
         config, request = envelope['config'], envelope['request']
         if not isinstance(config, dict) or set(config) != {'root', 'kind', 'mountPoint', 'coordinatorVersion'}:
@@ -63,7 +81,10 @@ def main():
         spec.loader.exec_module(module)
         reader = LegacyCacheReader(module, root=config['root'], kind=config['kind'], mount_point=config['mountPoint'],
                                    coordinator_version=config['coordinatorVersion'])
-        result = reader.inspect(user_id=request['userId'], dataset=request['dataset'], version=request['version'], kind=request['kind'])
+        operations = {'inspect': reader.inspect, 'export-access': reader.export_access}
+        if envelope['operation'] not in operations:
+            raise ValueError('Invalid inspection operation')
+        result = operations[envelope['operation']](user_id=request['userId'], dataset=request['dataset'], version=request['version'], kind=request['kind'])
         print(json.dumps({'result': result}))
         return 0
     except PermissionError:

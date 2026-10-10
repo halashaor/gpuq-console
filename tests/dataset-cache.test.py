@@ -508,6 +508,9 @@ class DatasetCacheTests(unittest.TestCase):
             reader = reader_type(D, root=self.root, kind='cache')
             self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache'),
                              dict(dataset='sample', version=version, kind='cache', availability='available'))
+            exported = reader.export_access(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+            self.assertEqual(exported['legacyOwners'], [OWNER.user_id])
+            self.assertEqual(len(exported['snapshotId']), 64)
         after = {str(path.relative_to(self.root)): (path.stat().st_ino, path.stat().st_mtime_ns, path.stat().st_size)
                  for path in self.root.rglob('*')}
         self.assertEqual(after, before)
@@ -569,6 +572,18 @@ class DatasetCacheTests(unittest.TestCase):
         marker.write_text(json.dumps(dict(schema=D.SCHEMA, version='0' * 64)))
         with self.assertRaisesRegex(D.CacheError, 'corrupt'):
             reader.inspect(user_id=OTHER.user_id, dataset='sample', version=version, kind='cache')
+
+    def test_exported_acl_snapshot_changes_when_legacy_readers_change(self):
+        version = self.register()
+        reader = self.existing_reader()
+        first = reader.export_access(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+        self.assertEqual(reader.export_access(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache'), first)
+        with self.cache._locked():
+            D._write_json(self.root / '.registry' / 'sample' / 'dataset.json',
+                          dict(schema=D.SCHEMA, owners=[OWNER.user_id, OTHER.user_id]))
+        second = reader.export_access(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+        self.assertEqual(second['legacyOwners'], [OWNER.user_id, OTHER.user_id])
+        self.assertNotEqual(first['snapshotId'], second['snapshotId'])
 
     def test_long_publish_hash_does_not_block_status_and_lock_wait_is_bounded(self):
         version = self.register()
