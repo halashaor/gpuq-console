@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
+import {DatasetRequests} from '../portal/dataset-requests.mjs';
 import {installStorageArchive} from '../storage-archive.mjs';
 import {createDatasetRemovalGuard,datasetCatalogCall} from '../dataset-catalog.mjs';
 import {fixture as deletionFixture,hosts,version,principal,admin} from './dataset-deletion-fixture.mjs';
@@ -32,6 +33,7 @@ function fixture(t){
     return {datasets:structuredClone(records.filter(item=>Array.isArray(item.ownerIds)&&item.ownerIds.includes(args.userId)))};
   };
   service.datasetReadPending=0;
+  service.dataRequests=new DatasetRequests(service);
   service.datasetLabelView=(owner,dataset)=>({displayName:'Label '+dataset});
   service.principal=token=>{
     const who=token===principal.userId?principal:token===admin.userId?admin:null;

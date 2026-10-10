@@ -12,7 +12,7 @@ export const OPERATION_ROUTES={
   terminalExchange:['terminal.exchange'],
   datasetDeletion:['datasets.delete','datasets.delete.status','datasets.delete.restore','datasets.delete.continue','datasets.delete.cancel'],
   storageUsage:['storage.usage.mine','storage.usage.users'],
-  datasetRead:[
+  dataset:[
     'datasets.catalog','datasets.capacity','datasets.overview','datasets.files.list','datasets.training.capabilities',
     'datasets.list','datasets.status','datasets.prepare','datasets.cache.capabilities','datasets.cache.prepare',
     'datasets.cache.release','datasets.cache.status','datasets.cache.cancel',

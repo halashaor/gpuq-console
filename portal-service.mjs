@@ -297,7 +297,7 @@ export class PortalService extends DemoService{
         queueWaitMs:0,serializedPending:this.pending,activeReads:this.uploadReadPending}));
     }
   }
-  datasetRead(token,operation,args){return this.dataRequests.read(token,operation,args);}
+  datasetRead(token,operation,args){return this.dataRequests.execute(token,operation,args);}
   async login(username,password){
     // Authentication must not wait behind remote writes or scheduler dispatch.
     // Bound expensive password work independently; same-account attempts remain
@@ -397,7 +397,7 @@ export class PortalService extends DemoService{
     case 'terminalExchange':return this.terminalExchange(token,args);
     case 'datasetDeletion':return this.dataRequests.delete(token,operation,args);
     case 'storageUsage':return this.dataRequests.usage(token,operation,args);
-    case 'datasetRead':return this.datasetRead(token,operation,args);
+    case 'dataset':return this.datasetRead(token,operation,args);
     case 'transfer':{
       const principal=this.principal(token);
       return transferCall(this,principal,operation,args,()=>this.principal(token)).then(result=>({result,principal:{username:principal.username,role:principal.role,userId:principal.userId}}));

@@ -11,6 +11,7 @@ import {executionCall} from '../execution.mjs';
 import {installDatasetIngress} from '../dataset-ingress.mjs';
 import {installMaintenance} from '../maintenance.mjs';
 import {PortalService} from '../portal-service.mjs';
+import {DatasetRequests} from '../portal/dataset-requests.mjs';
 
 const hot='gpu-1',cold='gpu-4',offline='gpu-2';
 const spec={name:'fresh-data',manifestBytes:100,manifestSha256:'a'.repeat(64),totalBytes:12,entries:2};
@@ -64,6 +65,7 @@ function fixture(t,{persistent=false}={}){
       await f.after?.(machine,operation,args,result);
       return result;
     }};
+  service.dataRequests=new DatasetRequests(service);
   f.service=service;f.ingress=installDatasetIngress(service,policy);
   f.call=(action,args,actor=principal)=>executionCall(service,actor,'datasets.upload.'+action,{machine:hot,...args});
   f.create=(key=randomUUID())=>f.call('admission.create',{key,...spec});

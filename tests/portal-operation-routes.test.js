@@ -16,7 +16,7 @@ test('mutations keep serialization while long observations keep their existing l
   assert.equal(operationRoute('datasets.upload.status'),'uploadRead');
   assert.equal(operationRoute('files.upload.status'),'remoteRead');
   assert.equal(operationRoute('terminal.exchange'),'terminalExchange');
-  for(const op of ['datasets.prepare','datasets.cache.prepare','datasets.cache.cancel'])assert.equal(operationRoute(op),'datasetRead',op);
+  for(const op of ['datasets.prepare','datasets.cache.prepare','datasets.cache.cancel'])assert.equal(operationRoute(op),'dataset',op);
   assert.equal(operationRoute('transfers.status'),'transfer');
   assert.equal(operationRoute('cloud.import.status'),'cloud');
 });

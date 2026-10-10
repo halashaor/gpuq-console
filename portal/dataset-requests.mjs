@@ -15,7 +15,7 @@ export class DatasetRequests{
     try{return await work();}finally{portal.datasetReadPending--;}
   }
 
-  async read(token,operation,args){
+  async execute(token,operation,args){
     const portal=this.portal,request=copyRequestArguments(args);
     const admitted=portal.principal(token),policy=JSON.stringify(portal.store.get(admitted.userId));
     const check=()=>{
