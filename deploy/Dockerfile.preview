@@ -1,0 +1,10 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY --chown=root:root preview-server.mjs client-bundle.mjs /app/
+COPY --chown=root:root dist/client.js dist/preview.css /app/dist/
+COPY --chown=root:root build/gpuctl.mjs /app/build/
+COPY --chown=root:root deploy/install-preview.sh /app/deploy/
+USER node
+ENV LISTEN_HOST=0.0.0.0 PORT=8080 NODE_OPTIONS=--max-old-space-size=96
+CMD ["node", "preview-server.mjs"]

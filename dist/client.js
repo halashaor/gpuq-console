@@ -9,7 +9,8 @@ export class DemoClient{
     const cancelled=signal?new Promise((_,reject)=>{onAbort=()=>{controller.abort(signal.reason);reject(signal.reason);};signal.addEventListener('abort',onAbort,{once:true});}):new Promise(()=>{});
     const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();const error=Error('请求超时；远端操作可能仍在完成，请刷新确认。');error.code='REQUEST_TIMEOUT';reject(error);},this.requestTimeoutMs);});
     try{return await Promise.race([(async()=>{
-      const response=await fetch(`/api/${path}`,{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
+      const prefix=globalThis.location?.pathname?.startsWith('/__preview__/')?'/__preview__':'';
+      const response=await fetch(`${prefix}/api/${path}`,{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
       let data;
       try{data=await response.json();}
       catch(cause){

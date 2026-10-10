@@ -5,6 +5,8 @@ import {communityHelp} from './community-cli.mjs';
 // checks. Do not advertise pilot integrations or unverified scheduling limits.
 const daily=`STARGATE / GPUQ — 个人项目、数据仓库、训练
 
+灰度测试：gpuctl preview on|off|status（需服务器授权；真实资源）
+
 1. 登录并选择已授权的服务器
 gpuctl login
 gpuctl state

@@ -316,10 +316,18 @@ async function main(){
   const controlTransport=await defaultPlatformControlTransport(base);
   try {
   async function post(path,body,requestSignal){
-    return apiPost(base,path,body,{token:session?.token,signal:requestSignal,fetchImpl:controlTransport.fetchImpl});
+    return apiPost(base,path,body,{token:session?.token,signal:requestSignal,preview:session?.preview===true&&path==='call',fetchImpl:controlTransport.fetchImpl});
   }
   const call=(operation,args={},signal)=>post('call',{operation,args},signal);
   let command=positionals[0];let result,mode={demo:true,gpuqConnected:false};
+  if(command==='preview'){
+    if(positionals.length!==2||!['on','off','status'].includes(positionals[1])||training.length)fail('Usage: gpuctl preview on|off|status');
+    if(!session)fail('请先登录：gpuctl login');
+    if(positionals[1]==='on')await apiPost(base,'call',{operation:'state',args:{view:'summary'}},{token:session.token,preview:true,fetchImpl:controlTransport.fetchImpl});
+    if(positionals[1]!=='status'){session.preview=positionals[1]==='on';await saveDatasetUploadSession(sessionFile,session);}
+    const value={channel:session.preview===true?'preview':'stable',url:base.origin+(session.preview===true?'/__preview__/':'/'),realResources:true};
+    console.log(options.json?JSON.stringify({ok:true,data:value}):`${value.channel==='preview'?'灰度版（真实资源）':'稳定版'} · ${value.url}`);return;
+  }
   if(command==='register'){
     if(positionals.length!==2)fail('Usage: register USERNAME');
     if(options['password-stdin'])fail('Use --credentials-stdin with JSON {invite,password} for registration.');

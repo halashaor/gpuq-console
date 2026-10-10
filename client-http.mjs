@@ -13,13 +13,13 @@ const projectLockBusy=value=>typeof value==='string'&&/\[Errno 11\] Resource tem
 const safe=value=>String(value).replace(/[\p{Cc}\p{Cf}]/gu,' ').slice(0,600);
 const error=(message,status)=>Object.assign(Error(message),{status});
 
-export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep=(ms,s)=>new Promise((resolve,reject)=>{
+export async function apiPost(base,path,body,{token,signal,preview=false,fetchImpl=fetch,sleep=(ms,s)=>new Promise((resolve,reject)=>{
   if(s.aborted)return reject(s.reason);
   const done=()=>{clearTimeout(timer);s.removeEventListener('abort',abort);resolve();};
   const abort=()=>{clearTimeout(timer);s.removeEventListener('abort',abort);reject(s.reason);};
   const timer=setTimeout(done,ms);s.addEventListener('abort',abort,{once:true});
 })}={}){
-  const target=new URL(`/api/${path}`,base),operation=path==='call'?body?.operation:path;
+  const target=new URL(`${preview?'/__preview__':''}/api/${path}`,base),operation=path==='call'?body?.operation:path;
   const read=path==='call'&&(READS.has(operation)||UPLOAD_READS.has(operation));
   const uploadRead=read&&UPLOAD_READS.has(operation);
   const retryDelays=uploadRead?UPLOAD_READ_RETRY_DELAYS:READ_RETRY_DELAYS;
