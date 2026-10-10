@@ -1,4 +1,4 @@
-import {SOURCE_INSPECTION_ROUTE} from '../contracts/source-inspection.mjs';
+import {SOURCE_INSPECTION_ROUTE, parseSourceInspection} from '../contracts/source-inspection.mjs';
 import {parseDataReadResult} from '../contracts/data-read.mjs';
 import {ApplicationError} from '../domain/errors.mjs';
 
@@ -19,7 +19,8 @@ export class HttpSourceReader {
     this.timeoutMs = timeoutMs;
   }
 
-  async inspect(request) {
+  async inspect(request, {actor} = {}) {
+    const input = parseSourceInspection({request, accountId: actor?.id});
     const node = this.#nodes.get(request.machineId);
     if (!node) throw new ApplicationError('SOURCE_NODE_UNAVAILABLE');
     const send = this.fetch;
@@ -28,10 +29,11 @@ export class HttpSourceReader {
       const response = await send(new URL(SOURCE_INSPECTION_ROUTE, node.origin), {
         method: 'POST', redirect: 'error', signal,
         headers: {'Content-Type': 'application/json', Authorization: `Bearer ${node.credential}`},
-        body: JSON.stringify(request),
+        body: JSON.stringify(input),
       });
       if (!response.ok) {
         await response.body?.cancel();
+        if (response.status === 403) throw new ApplicationError('FORBIDDEN');
         throw new Error('Node inspection rejected');
       }
       let size = 0;
@@ -48,6 +50,7 @@ export class HttpSourceReader {
       }
       return result.availability === 'available' ? {availability: 'available'} : {availability: result.availability, reason: result.reason};
     } catch (cause) {
+      if (cause instanceof ApplicationError && cause.code === 'FORBIDDEN') throw cause;
       throw new ApplicationError('SOURCE_NODE_UNAVAILABLE', {cause});
     }
   }

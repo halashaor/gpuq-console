@@ -1,6 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-import {SOURCE_INSPECTION_ROUTE} from '../contracts/source-inspection.mjs';
-import {parseDataReadRequest} from '../contracts/data-read.mjs';
+import {SOURCE_INSPECTION_ROUTE, parseSourceInspection} from '../contracts/source-inspection.mjs';
 import {ApplicationError} from '../domain/errors.mjs';
 import {readObservation} from '../domain/data-source.mjs';
 import {createJsonRoutes} from './json-http.mjs';
@@ -14,12 +13,12 @@ export function createSourceInspectionHandler({machineId, credential, sources, r
     if (!supplied || !timingSafeEqual(Buffer.from(supplied, 'hex'), expected)) throw new ApplicationError('UNAUTHENTICATED');
     return {id: 'coordinator'};
   };
-  const inspect = {async execute(_actor, request) {
+  const inspect = {async execute(_actor, {request, accountId}) {
     if (request.machineId !== machineId) throw new ApplicationError('SOURCE_NODE_MISMATCH');
-    return readObservation(request, await sources.inspect(request));
+    return readObservation(request, await sources.inspect(request, {actor: {id: accountId}}));
   }};
   return createJsonRoutes({authenticate, reportError,
-    routes: new Map([[SOURCE_INSPECTION_ROUTE, {parse: parseDataReadRequest, useCase: inspect}]]),
-    statuses: {UNAUTHENTICATED: 401, SOURCE_NODE_MISMATCH: 409, SOURCE_UNAVAILABLE: 503},
+    routes: new Map([[SOURCE_INSPECTION_ROUTE, {parse: parseSourceInspection, useCase: inspect}]]),
+    statuses: {UNAUTHENTICATED: 401, FORBIDDEN: 403, SOURCE_NODE_MISMATCH: 409, SOURCE_UNAVAILABLE: 503},
   });
 }

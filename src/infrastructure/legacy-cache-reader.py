@@ -25,3 +25,44 @@ class LegacyCacheReader:
         return {'dataset': dataset, 'version': version, 'kind': kind,
                 'availability': 'available' if status['state'] == 'READY' else 'unavailable',
                 **({} if status['state'] == 'READY' else {'reason': 'not-ready'})}
+
+
+def main():
+    """Private local process protocol; configuration comes from the node adapter."""
+    import importlib.util
+    import json
+    from pathlib import Path
+    import sys
+
+    sys.dont_write_bytecode = True
+    try:
+        raw = sys.stdin.buffer.read(8193)
+        if len(raw) > 8192:
+            raise ValueError('Request too large')
+        envelope = json.loads(raw)
+        if not isinstance(envelope, dict) or set(envelope) != {'config', 'request'}:
+            raise ValueError('Invalid inspection envelope')
+        config, request = envelope['config'], envelope['request']
+        if not isinstance(config, dict) or set(config) != {'root', 'kind', 'mountPoint'}:
+            raise ValueError('Invalid configured source')
+        if not isinstance(request, dict) or set(request) != {'userId', 'dataset', 'version', 'kind'}:
+            raise ValueError('Invalid inspection request')
+        module_path = Path(__file__).resolve().parents[2] / 'deploy' / 'dataset-cache.py'
+        spec = importlib.util.spec_from_file_location('v2_published_cache', module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        reader = LegacyCacheReader(module, root=config['root'], kind=config['kind'], mount_point=config['mountPoint'])
+        result = reader.inspect(user_id=request['userId'], dataset=request['dataset'], version=request['version'], kind=request['kind'])
+        print(json.dumps({'result': result}))
+        return 0
+    except PermissionError:
+        print(json.dumps({'error': {'code': 'FORBIDDEN'}}))
+        return 1
+    except Exception:
+        # No paths, manifests, passwords or tracebacks cross this local boundary.
+        print(json.dumps({'error': {'code': 'SOURCE_UNAVAILABLE'}}))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

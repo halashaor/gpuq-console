@@ -61,7 +61,7 @@ test('node rejects wrong coordinator credential, wrong machine and caller paths 
   const origin = await listen(t, createSourceInspectionHandler({machineId: 'node-1', credential,
     sources: {inspect: async () => {calls++; return {availability: 'available'};}}, reportError() {}}));
   const post = (body, token) => fetch(origin + SOURCE_INSPECTION_ROUTE, {method: 'POST',
-    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify(body)});
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify({request: body, accountId: 'alice'})});
   assert.equal((await post(readRequest, 'a'.repeat(64))).status, 401);
   assert.equal((await post({...readRequest, machineId: 'node-2'}, credential)).status, 409);
   assert.equal((await post({...readRequest, hostPath: '/arbitrary'}, credential)).status, 400);
@@ -79,7 +79,7 @@ test('node failures, mismatched replies, redirects and excessive bodies are not 
       else {res.end(JSON.stringify({result: {machineId: 'wrong', source: readRequest.source, availability: 'missing', reason: 'not-found'}}));}
     });
     const reader = new HttpSourceReader({nodes: [{machineId: 'node-1', origin, credential}]});
-    await assert.rejects(reader.inspect(readRequest), hasCode('SOURCE_NODE_UNAVAILABLE'));
+    await assert.rejects(reader.inspect(readRequest, {actor: {id: 'alice'}}), hasCode('SOURCE_NODE_UNAVAILABLE'));
     assert.equal(calls, 1);
   }
 });
@@ -88,9 +88,9 @@ test('timeout or unknown node never falls back to another node', async t => {
   let calls = 0;
   const origin = await listen(t, () => {calls++;});
   const reader = new HttpSourceReader({nodes: [{machineId: 'node-1', origin, credential}], timeoutMs: 50});
-  await assert.rejects(reader.inspect(readRequest), hasCode('SOURCE_NODE_UNAVAILABLE'));
+  await assert.rejects(reader.inspect(readRequest, {actor: {id: 'alice'}}), hasCode('SOURCE_NODE_UNAVAILABLE'));
   const observed = calls;
-  await assert.rejects(reader.inspect({...readRequest, machineId: 'unknown'}), hasCode('SOURCE_NODE_UNAVAILABLE'));
+  await assert.rejects(reader.inspect({...readRequest, machineId: 'unknown'}, {actor: {id: 'alice'}}), hasCode('SOURCE_NODE_UNAVAILABLE'));
   assert.equal(calls, observed);
   assert.ok(calls <= 1);
 });

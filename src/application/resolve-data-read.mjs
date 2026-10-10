@@ -11,7 +11,7 @@ export class ResolveDataRead{
   async execute(actor,request){
     await this.access.requireRead(actor,request);
     let observation;
-    try{observation=await this.sources.inspect(request);}
+    try{observation=await this.sources.inspect(request,{actor});}
     finally{await this.access.requireRead(actor,request);}
     return readObservation(request, observation);
   }
