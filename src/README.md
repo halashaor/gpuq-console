@@ -32,6 +32,7 @@
 - `infrastructure/gpuq-policy.mjs`／`.py`：调用现役 GPUQ 纯策略计算排序、合法弹性 batch、扩容目标和抢占候选，不创建任务或执行动作。部署需保留 `gpuq/gpuq/` 模块目录；资源观察、配额、租约和执行适配尚待接入，计划不等于已经分配 GPU。
 - `domain/training-request.mjs` 与 `sqlite/training-requests.mjs`：内部准备载荷的规范化身份和持久日志，保存真实提交者及任务名；回执不含执行参数，重复请求不改写旧记录。RECORDED 不代表 GPUQ 已接受；公开提交接口与项目／资源准入未完成，不能让客户端直接提交 preparedSpec。
 - `contracts/training-submission.mjs`：网页／CLI 共用训练输入结构，明确项目 release、容器命令、机器候选、资源与调度选项、逻辑数据来源。不接收宿主路径或执行身份；结构解析不代表项目存在、授权有效或 GPUQ 组合准入通过。
+- `application/validate-training-resources.mjs`：将 V2 意图与可信节点池送到 GPUQ 原生纯资源校验。原 GPUQ 完整提交复用同一资源／环境函数，继续独立验证真实 cwd、可执行文件和 RPC 大小；该校验不占卡，也不代替项目、权限、配额或运行库检查。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

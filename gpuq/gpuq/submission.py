@@ -97,40 +97,10 @@ PLACEMENTS = frozenset({"any", "pinned"})
 GPU_UUID_RE = re.compile(r"^GPU-[A-Za-z0-9][A-Za-z0-9-]*$")
 
 
-def validate_submission(
-    raw: dict[str, Any],
-    pool_size: int,
-    *,
-    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
-    managed_gpu_uuids: tuple[str, ...] | None = None,
+def validate_resource_request(
+    raw: dict[str, Any], pool_size: int, *, managed_gpu_uuids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Validate and canonicalize a submission, including its RPC wire size.
-
-    The size check uses the same encoder as :class:`gpuq.protocol.Client`, so a
-    returned submission is guaranteed to fit a client configured with the same
-    ``max_request_bytes`` value.
-    """
-
-    if not isinstance(raw, dict):
-        raise ValueError("submission must be an object")
-    if (
-        isinstance(max_request_bytes, bool)
-        or not isinstance(max_request_bytes, int)
-        or max_request_bytes < 1
-    ):
-        raise ValueError("max_request_bytes must be a positive integer")
-    unknown = sorted(set(raw) - SUBMISSION_KEYS)
-    missing = sorted(SUBMISSION_KEYS - OPTIONAL_SUBMISSION_KEYS - set(raw))
-    if unknown:
-        raise ValueError(f"unknown submission fields: {', '.join(unknown)}")
-    if missing:
-        raise ValueError(f"missing submission fields: {', '.join(missing)}")
-    try:
-        submit_key = str(uuid.UUID(str(raw["submit_key"])))
-    except (ValueError, AttributeError) as exc:
-        raise ValueError("submit_key must be a UUID") from exc
-    name = validate_label(raw["name"], "name")
-    owner = validate_label(raw["owner"], "owner")
+    """Pure resource validation shared with non-launching admission callers."""
     priority = raw["priority"]
     preempt_idle_only = raw.get("preempt_idle_only", False)
     if not isinstance(preempt_idle_only, bool):
@@ -250,6 +220,74 @@ def validate_submission(
                 "requested GPU UUIDs are outside the managed pool: "
                 + ", ".join(outside)
             )
+    return {
+        "submission": {
+            "preempt_idle_only": preempt_idle_only,
+            **({"preempt_opt_in_only": True} if preempt_opt_in_only else {}),
+            "share_gpu": share_gpu, "vram_mb": vram_mb,
+            "priority": priority, "dispatch_mode": dispatch_mode,
+            "checkpoint_capability": checkpoint_capability, "restart_policy": restart_policy,
+            "gpu_count": gpu_count, "min_gpu_count": min_gpu_count,
+            "elastic_gpu_count": elastic_gpu_count, "auto_scale_up": auto_scale_up,
+            "target_global_batch_size": target_global_batch_size,
+            "per_device_micro_batch_size": per_device_micro_batch_size,
+            "placement": placement, "requested_gpu_uuids": requested_gpu_uuids,
+        },
+        "allowed_gpu_counts": compatible,
+    }
+
+
+def validate_runtime_environment(raw: dict[str, Any], share_gpu: bool) -> dict[str, Any]:
+    """Validate environment/HAMi inputs without inspecting an executable or cwd."""
+    env_raw = raw["env"]
+    if not isinstance(env_raw, dict):
+        raise ValueError("env must be an object")
+    if len(env_raw) > 256:
+        raise ValueError("env contains too many variables")
+    env = validate_env(env_raw, RESERVED_ENV)
+    hami_core, sm_percent = validate_hami_request(
+        raw.get("hami_core", False), raw.get("sm_percent"), share_gpu, env
+    )
+    if sum(len(k) + len(v) for k, v in env.items()) > 131_072:
+        raise ValueError("env is too large")
+    return {"env": env, "hami_core": hami_core, "sm_percent": sm_percent}
+
+
+def validate_submission(
+    raw: dict[str, Any],
+    pool_size: int,
+    *,
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+    managed_gpu_uuids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Validate and canonicalize a submission, including its RPC wire size.
+
+    The size check uses the same encoder as :class:`gpuq.protocol.Client`, so a
+    returned submission is guaranteed to fit a client configured with the same
+    ``max_request_bytes`` value.
+    """
+
+    if not isinstance(raw, dict):
+        raise ValueError("submission must be an object")
+    if (
+        isinstance(max_request_bytes, bool)
+        or not isinstance(max_request_bytes, int)
+        or max_request_bytes < 1
+    ):
+        raise ValueError("max_request_bytes must be a positive integer")
+    unknown = sorted(set(raw) - SUBMISSION_KEYS)
+    missing = sorted(SUBMISSION_KEYS - OPTIONAL_SUBMISSION_KEYS - set(raw))
+    if unknown:
+        raise ValueError(f"unknown submission fields: {', '.join(unknown)}")
+    if missing:
+        raise ValueError(f"missing submission fields: {', '.join(missing)}")
+    try:
+        submit_key = str(uuid.UUID(str(raw["submit_key"])))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("submit_key must be a UUID") from exc
+    name = validate_label(raw["name"], "name")
+    owner = validate_label(raw["owner"], "owner")
+    resources = validate_resource_request(raw, pool_size, managed_gpu_uuids=managed_gpu_uuids)["submission"]
     cwd_raw = raw["cwd"]
     if (
         not isinstance(cwd_raw, str)
@@ -291,43 +329,13 @@ def validate_submission(
         raise ValueError(f"argv[0] is not executable: {executable}")
     if executable.name in UNSUPPORTED_EXECUTABLES:
         raise ValueError(f"{executable.name} is not supported in gpuq v1")
-    env_raw = raw["env"]
-    if not isinstance(env_raw, dict):
-        raise ValueError("env must be an object")
-    if len(env_raw) > 256:
-        raise ValueError("env contains too many variables")
-    env = validate_env(env_raw, RESERVED_ENV)
-    hami_core, sm_percent = validate_hami_request(
-        raw.get("hami_core", False), raw.get("sm_percent"), share_gpu, env
-    )
-    if sum(len(k) + len(v) for k, v in env.items()) > 131_072:
-        raise ValueError("env is too large")
+    runtime = validate_runtime_environment(raw, resources["share_gpu"])
     clean = {
-        "preempt_idle_only": preempt_idle_only,
-        **({"preempt_opt_in_only": True} if preempt_opt_in_only else {}),
-        "yield_policy": validate_yield_policy(raw.get("yield_policy", "legacy"), checkpoint_capability, share_gpu),
-        "hami_core": hami_core,
-        "sm_percent": sm_percent,
-        "share_gpu": share_gpu,
-        "vram_mb": vram_mb,
-        "submit_key": submit_key,
-        "name": name,
-        "owner": owner,
-        "priority": priority,
-        "dispatch_mode": dispatch_mode,
-        "checkpoint_capability": checkpoint_capability,
-        "restart_policy": restart_policy,
-        "gpu_count": gpu_count,
-        "min_gpu_count": min_gpu_count,
-        "elastic_gpu_count": elastic_gpu_count,
-        "auto_scale_up": auto_scale_up,
-        "target_global_batch_size": target_global_batch_size,
-        "per_device_micro_batch_size": per_device_micro_batch_size,
-        "placement": placement,
-        "requested_gpu_uuids": requested_gpu_uuids,
-        "argv": argv,
-        "cwd": str(cwd),
-        "env": env,
+        **resources,
+        "yield_policy": validate_yield_policy(raw.get("yield_policy", "legacy"), resources["checkpoint_capability"], resources["share_gpu"]),
+        **runtime,
+        "submit_key": submit_key, "name": name, "owner": owner,
+        "argv": argv, "cwd": str(cwd),
     }
     wire_size = len(encode_request("submit", clean, submit_key))
     if wire_size > max_request_bytes:

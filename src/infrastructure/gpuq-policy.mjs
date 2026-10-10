@@ -15,6 +15,7 @@ export class GpuqPolicy {
   elastic(args) {return this.#evaluate('elastic', args);}
   preemption(args) {return this.#evaluate('preemption', args);}
   queue(args) {return this.#evaluate('queue', args);}
+  resources(args) {return this.#evaluate('resources', args);}
 
   async #evaluate(operation, args) {
     try {

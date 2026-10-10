@@ -6,7 +6,8 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'gpuq'))
 from gpuq.elastic import compatible_world_sizes, plan_elastic_batch
-from gpuq.policy import VictimCandidate, preemption_mode, queue_sort_key, select_scale_target, select_victims
+from gpuq.policy import VictimCandidate, preemption_mode, queue_sort_key, select_scale_target, select_victims, validate_yield_policy
+from gpuq.submission import validate_resource_request, validate_runtime_environment
 
 
 def count(value, name, minimum=0):
@@ -23,6 +24,15 @@ def priority(value):
 
 
 def evaluate(operation, args):
+    if operation == 'resources':
+        raw = args['request']
+        validated = validate_resource_request(raw, count(args['pool_size'], 'pool_size', 1),
+                                              managed_gpu_uuids=tuple(args['managed_gpu_uuids']))
+        resource = validated['submission']
+        runtime = validate_runtime_environment(raw, resource['share_gpu'])
+        resource['yield_policy'] = validate_yield_policy(raw.get('yield_policy', 'legacy'), resource['checkpoint_capability'], resource['share_gpu'])
+        resource.update(hami_core=runtime['hami_core'], sm_percent=runtime['sm_percent'])
+        return dict(resources=resource, allowedGpuCounts=list(validated['allowed_gpu_counts']))
     if operation == 'elastic':
         minimum = count(args['min_gpu_count'], 'min_gpu_count', 1)
         maximum = count(args['max_gpu_count'], 'max_gpu_count', 1)
