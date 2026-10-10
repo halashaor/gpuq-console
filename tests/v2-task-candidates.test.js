@@ -11,10 +11,13 @@ import {ObserveTaskCandidates} from '../src/application/observe-task-candidates.
 import {ObserveTrainingResources} from '../src/application/observe-training-resources.mjs';
 import {ValidateTrainingResources} from '../src/application/validate-training-resources.mjs';
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
+import {createTrainingDispatchSchema, SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
+import {PrepareTaskDispatch} from '../src/application/prepare-task-dispatch.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
   const f = await computeFixture(t); f.ready();
+  createTrainingDispatchSchema(f.database);
   createTrainingQueueSchema(f.database); createTrainingCatalogSchema(f.database); createProjectRegistrationSchema(f.database);
   const submission = trainingSubmission(); submission.machines = {kind: 'selected', ids: ['node-1']};
   f.database.exec("INSERT INTO v2_projects(id,owner_id) VALUES('project-1','alice')");
@@ -84,6 +87,11 @@ test('worker candidate pipeline runs after logout and rechecks account authority
   const result = await app.execute(f.jobId);
   assert.equal(result.candidates[0].quotaFit.exclusiveFreeFitGpuCount, 2);
   assert.equal(f.claims.balancesForTask(f.jobId, ['node-1'])[0].heldTotal, 0);
+  const prepare = new PrepareTaskDispatch({observer: app, dispatches: new SqliteTrainingDispatches({database: f.database})});
+  const prepared = await prepare.execute(f.jobId);
+  assert.equal(prepared.kind, 'prepared'); assert.equal(prepared.dispatch.gpuCount, 2);
+  assert.equal(f.claims.balancesForTask(f.jobId, ['node-1'])[0].heldTotal, 2);
+  assert.deepEqual(await prepare.execute(f.jobId), prepared);
   projects.inspect = async () => {
     f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
     return {...identity, runtimeVerified: false};

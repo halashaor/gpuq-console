@@ -4,6 +4,8 @@ import {SqliteComputeClaims} from './compute-claims.mjs';
 import {SqliteSessionReader} from './session-reader.mjs';
 import {requireActiveSession} from '../../domain/session-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
+import {SqliteTaskAuthority} from './task-authority.mjs';
+import {requireTaskPlacement} from '../../domain/task-placement.mjs';
 
 export function createTrainingDispatchSchema(database) {
   transaction(database, () => database.exec(`CREATE TABLE v2_training_dispatches (
@@ -37,6 +39,20 @@ export class SqliteTrainingDispatches {
   prepare(actor, command, now) {
     return transaction(this.database, () => {
       this.#authorize(actor, command.jobId, now);
+      return this.#prepare(command, now, () => this.claims.claimWithinTransaction(actor, command, now, {requireCurrentAccess: true}));
+    });
+  }
+
+  prepareForTask(jobId, selection, now) {
+    return transaction(this.database, () => {
+      const context = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+      requireTaskPlacement(context.submission, selection);
+      const command = {jobId, machineId: selection.machineId, gpuCount: selection.gpuCount};
+      return this.#prepare(command, now, () => this.claims.claimTaskWithinTransaction(jobId, selection, now));
+    });
+  }
+
+  #prepare(command, now, reserve) {
       const existing = this.#find(command.jobId);
       if (existing) {
         if (existing.machine_id !== command.machineId || existing.gpu_count !== command.gpuCount) {
@@ -44,11 +60,18 @@ export class SqliteTrainingDispatches {
         }
         return receipt(existing);
       }
-      const claim = this.claims.claimWithinTransaction(actor, command, now, {requireCurrentAccess: true});
+      const claim = reserve();
       if (claim.state !== 'HELD') throw new ApplicationError('COMPUTE_CLAIM_NOT_HELD');
       this.database.prepare("INSERT INTO v2_training_dispatches VALUES(?,?,'PREPARED',?)")
         .run(randomUUID(), command.jobId, now);
       return receipt(this.#find(command.jobId));
+  }
+
+  getForTask(jobId) {
+    return readTransaction(this.database, () => {
+      new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+      const row = this.#find(jobId);
+      return row ? receipt(row) : null;
     });
   }
 

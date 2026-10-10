@@ -4,6 +4,7 @@ import {requireActiveSession} from '../../domain/session-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
 import {computeBalance} from '../../domain/compute-balance.mjs';
 import {SqliteTaskAuthority} from './task-authority.mjs';
+import {requireTaskPlacement} from '../../domain/task-placement.mjs';
 
 export function createComputeClaimsSchema(database) {
   transaction(database, () => database.exec(`
@@ -74,8 +75,20 @@ export class SqliteComputeClaims {
   }
 
   /** Caller owns BEGIN IMMEDIATE; new dispatch preparation also rechecks existing holds. */
-  claimWithinTransaction(actor, {jobId, machineId, gpuCount}, now, {requireCurrentAccess = false} = {}) {
-    const session = this.#authorize(actor, now), db = this.database;
+  claimWithinTransaction(actor, command, now, {requireCurrentAccess = false} = {}) {
+    const session = this.#authorize(actor, now);
+    return this.#claim(actor, session.accountRole, command, now, requireCurrentAccess);
+  }
+
+  claimTaskWithinTransaction(jobId, selection, now) {
+    const context = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+    requireTaskPlacement(context.submission, selection);
+    return this.#claim({id: context.accountId}, context.accountRole,
+      {jobId, machineId: selection.machineId, gpuCount: selection.gpuCount}, now, true);
+  }
+
+  #claim(actor, accountRole, {jobId, machineId, gpuCount}, now, requireCurrentAccess) {
+    const db = this.database;
     if (!Number.isSafeInteger(gpuCount) || gpuCount < 1 || gpuCount > 4096) throw new ApplicationError('INVALID_COMPUTE_CLAIM');
     const job = db.prepare('SELECT account_id FROM v2_training_requests WHERE job_id=?').get(jobId);
     if (!job || job.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
@@ -84,14 +97,14 @@ export class SqliteComputeClaims {
     if (existing) {
       if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
       if (requireCurrentAccess) {
-        const balance = this.#balance(actor, machineId, session.accountRole);
+        const balance = this.#balance(actor, machineId, accountRole);
         if (balance.heldOnMachine > balance.machineLimit || (balance.totalLimit !== null && balance.heldTotal > balance.totalLimit)) {
           throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
         }
       }
       return receipt(existing);
     }
-    const balance = this.#balance(actor, machineId, session.accountRole);
+    const balance = this.#balance(actor, machineId, accountRole);
     if (gpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
     db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, now);
     return receipt(db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId));
