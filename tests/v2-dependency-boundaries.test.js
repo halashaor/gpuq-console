@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 
 const root=fileURLToPath(new URL('../src/',import.meta.url));
 const dependencies={contracts:['contracts'],domain:['domain'],application:['application','domain'],
-  infrastructure:['infrastructure','application','domain'],api:['api','contracts','application','domain'],
+  infrastructure:['infrastructure','application','domain','contracts'],api:['api','contracts','application','domain'],
   client:['client','contracts'],bootstrap:['bootstrap','api','application','infrastructure','domain','client']};
 async function files(directory){const result=[];for(const entry of await readdir(directory,{withFileTypes:true})){
   const path=resolve(directory,entry.name);if(entry.isDirectory())result.push(...await files(path));else if(entry.name.endsWith('.mjs'))result.push(path);

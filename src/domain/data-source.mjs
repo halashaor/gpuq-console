@@ -8,6 +8,13 @@ export function containerPathFor(source){
   }
 }
 
+/** Public observation projection, shared by coordinator and node inspection. */
+export function readObservation(request, observation) {
+  const result = {machineId: request.machineId, source: {...request.source}};
+  if (observation.availability !== 'available') return {...result, availability: observation.availability, reason: observation.reason};
+  return {...result, availability: 'available', location: {containerPath: containerPathFor(request.source), readOnly: true}};
+}
+
 // Warehouse and cache are locations of the same dataset permission resource.
 export function permissionResourceFor({machineId,source}){
   switch(source.kind){

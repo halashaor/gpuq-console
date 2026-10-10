@@ -9,12 +9,17 @@ import {LocalSourceReader} from '../infrastructure/local-source-reader.mjs';
 // Node-local composition. A VPS must supply a remote source adapter instead.
 // Database ownership/migrations stay with the caller. This only composes reads.
 export function assembleLocalSqliteDataRead({database,machineId,publicOrigin,clock=Date.now,reportError}){
+  const catalog=new SqliteSourceCatalog({database});
+  const sources=new LocalSourceReader({machineId,catalog});
+  return assembleSqliteDataRead({database,sources,publicOrigin,clock,reportError});
+}
+
+/** Coordinator composition uses a node reader, not the VPS filesystem. */
+export function assembleSqliteDataRead({database,sources,publicOrigin,clock=Date.now,reportError}){
   const sessions=new SqliteSessionReader({database});
   const authority=new SqliteDataAuthority({database});
-  const catalog=new SqliteSourceCatalog({database});
   const authenticateSession=new AuthenticateSession({sessions,clock});
   const authenticate=createSessionAuthenticator({authenticateSession,publicOrigin});
   const access=new DataReadAccess({authority,clock});
-  const sources=new LocalSourceReader({machineId,catalog});
   return assembleDataRead({authenticate,access,sources,reportError});
 }

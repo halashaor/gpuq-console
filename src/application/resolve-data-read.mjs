@@ -1,4 +1,4 @@
-import {containerPathFor} from '../domain/data-source.mjs';
+import {readObservation} from '../domain/data-source.mjs';
 
 /**
  * access.requireRead(actor, request): verifies current machine/source grants.
@@ -13,8 +13,6 @@ export class ResolveDataRead{
     let observation;
     try{observation=await this.sources.inspect(request);}
     finally{await this.access.requireRead(actor,request);}
-    const result={machineId:request.machineId,source:{...request.source}};
-    if(observation.availability!=='available')return {...result,availability:observation.availability,reason:observation.reason};
-    return {...result,availability:'available',location:{containerPath:containerPathFor(request.source),readOnly:true}};
+    return readObservation(request, observation);
   }
 }
