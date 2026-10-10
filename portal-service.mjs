@@ -16,27 +16,15 @@ import {LoginSessions} from './login-sessions.mjs';
 import {installStorageArchive} from './storage-archive.mjs';
 import {installOciCohort} from './oci-cohort.mjs';
 import {installProjectReplication,projectReplicationCall} from './project-replication.mjs';
-import {installDatasetLabels,datasetLabelCall} from './dataset-labels.mjs';
+import {installDatasetLabels} from './dataset-labels.mjs';
 import {installProjectCatalog} from './project-catalog.mjs';
 import {installDatasetDeletion} from './dataset-deletion.mjs';
 import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
 import {installDatasetIngress,datasetUploadAdmissionView} from './dataset-ingress.mjs';
 import {installDatasetCacheActions} from './dataset-cache-actions.mjs';
-import {storageUsageCall} from './storage-usage.mjs';
+import {DatasetRequests} from './portal/dataset-requests.mjs';
+import {operationRoute,RECEIPT_ONLY_OPERATIONS} from './portal/operation-routes.mjs';
 import {parseHostRootAllowlist,assertHostRootAllowed,installHostRootPolicy} from './host-root-policy.mjs';
-
-// Explicit observations (and ticket issuance/renewal) return their own receipt.
-// This only controls response presentation: authorization, dispatch and durable
-// observations still run through the existing operation and queue.
-const STATELESS_EXECUTION_RESULTS=new Set([
-  'datasets.upload.routes','datasets.upload.status','datasets.upload.direct-ticket',
-  'datasets.storage.status','datasets.storage.plan','datasets.workspace.list','datasets.workspace.get','datasets.workspace.status',
-  'datasets.snapshot.info','datasets.snapshot.manifest','datasets.snapshot.get',
-  'projects.list','projects.quota','projects.status','projects.local-import.status','projects.retire.plan','projects.retire.status',
-  'projects.label.get','projects.group.get','projects.catalog',
-  'projects.snapshot.info','projects.snapshot.manifest','projects.snapshot.get','projects.sync.status',
-  'jobs.logs','jobs.watch','jobs.diagnostics','jobs.completion','files.upload.list','terminal.status',
-]);
 
 // Aggregate history is a presentation view; point queries use durable jobs.
 const STATE_JOBS_BYTES=300000;
@@ -61,6 +49,7 @@ function compactTerminalStateJob(job,users){
 // One process owns this database. Serial transactions keep account changes atomic.
 // Reservations are durable before the separate restricted executor dispatches GPUQ.
 export class PortalService extends DemoService{
+  get dataRequests(){return this._dataRequests??=new DatasetRequests(this);}
   static async open(path,bootstrapPath,statusPath,bridge,notificationConfig,storageArchiveConfig,ociCohortMachines=[],datasetIngressConfig,hostRootAllowlist=process.env.GPUQ_HOST_ROOT_ALLOWLIST||'[]'){
     const rootAllowlist=parseHostRootAllowlist(hostRootAllowlist);
     await mkdir(dirname(path),{recursive:true,mode:0o700});
@@ -308,28 +297,7 @@ export class PortalService extends DemoService{
         queueWaitMs:0,serializedPending:this.pending,activeReads:this.uploadReadPending}));
     }
   }
-  async datasetRead(token,operation,args){
-    if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
-    args=structuredClone(args);
-    const admitted=this.principal(token),policy=JSON.stringify(this.store.get(admitted.userId));
-    const check=()=>{
-      if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
-      const current=this.principal(token);
-      if(current.userId!==admitted.userId||current.role!==admitted.role||current.username!==admitted.username||JSON.stringify(this.store.get(current.userId))!==policy)
-        throw Object.assign(Error('账号授权已改变，请重新加载数据集。'),{status:403});
-      return current;
-    };
-    check();
-    if(this.datasetReadPending>=4)throw Object.assign(Error('数据目录正在读取，请稍后刷新。'),{status:429});
-    this.datasetReadPending++;
-    try{let result;try{
-      this.assertMaintenanceAllowed?.(operation,args,admitted);
-      result=operation.startsWith('datasets.cache.')
-        ?await this.datasetCacheActionsCall(admitted,operation,args,check)
-        :await executionCall(this,admitted,operation,args);
-    }finally{check();}return {result,principal:check()};}
-    finally{this.datasetReadPending--;}
-  }
+  datasetRead(token,operation,args){return this.dataRequests.read(token,operation,args);}
   async login(username,password){
     // Authentication must not wait behind remote writes or scheduler dispatch.
     // Bound expensive password work independently; same-account attempts remain
@@ -411,68 +379,35 @@ export class PortalService extends DemoService{
     }catch(e){this.db.exec('ROLLBACK');throw e;}
   }
   invoke(token,operation,args={},options={}){
-    if(operation==='state')return this.readState(token,args);
-    if(operation==='datasets.upload.routes'||operation==='datasets.upload.status')return this.uploadRead(token,operation,args,options);
-    if(operation==='datasets.upload.admission.status'){
-      if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
-      const principal=this.principal(token);
-      // Pure journal recovery must not queue behind an unconfirmed node begin.
-      // It neither creates a mapping nor makes a bridge request.
-      return executionCall(this,principal,operation,structuredClone(args)).then(result=>{
-        const current=this.principal(token);
-        if(current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role)
-          throw Object.assign(Error('登录身份已改变。'),{status:403});
-        return {result,principal:{...current}};
-      });
-    }
-    if(operation==='tasks.display.get'||operation==='tasks.display.set')return taskDisplayCall(this,token,operation,args).then(result=>({result,principal:this.principal(token)}));
-    if(operation==='files.direct-ticket')return personalFileTicket(this,token,args);
-    if(['host.status','files.upload.status','files.get','files.list'].includes(operation))return this.remoteRead(token,operation,args);
-    if(operation==='projects.replicate'||operation==='projects.replication.status'||operation==='projects.replication.cancel'||operation==='projects.replication.retry'){
+    switch(operationRoute(operation)){
+    case 'state':return this.readState(token,args);
+    case 'uploadRead':return this.uploadRead(token,operation,args,options);
+    case 'admissionStatus':return this.dataRequests.admissionStatus(token,operation,args);
+    case 'taskDisplay':return taskDisplayCall(this,token,operation,args).then(result=>({result,principal:this.principal(token)}));
+    case 'fileTicket':return personalFileTicket(this,token,args);
+    case 'remoteRead':return this.remoteRead(token,operation,args);
+    case 'projectReplication':{
       const principal=this.principal(token);
       return projectReplicationCall(this,principal,operation,args,()=>this.principal(token)).then(result=>{
         this.principal(token);
         return {result,principal:{username:principal.username,role:principal.role,userId:principal.userId}};
       });
     }
-    if(operation==='datasets.label.get'||operation==='datasets.label.set'){
-      const principal=this.principal(token);
-      if(this.datasetReadPending>=4)return Promise.reject(Object.assign(Error('数据目录正在读取，请稍后刷新。'),{status:429}));
-      this.datasetReadPending++;
-      return datasetLabelCall(this,principal,operation,args,()=>this.principal(token))
-        .then(result=>({result,principal:this.principal(token)})).finally(()=>this.datasetReadPending--);
-    }
-    if(operation==='terminal.exchange')return this.terminalExchange(token,args);
-    if(['datasets.delete','datasets.delete.status','datasets.delete.restore','datasets.delete.continue','datasets.delete.cancel'].includes(operation)){
-      if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
-      const principal=this.principal(token);
-      const check=()=>{const current=this.principal(token);if(current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role)throw Object.assign(Error('登录身份已改变。'),{status:403});};
-      return this.datasetDeletionCall(principal,operation,structuredClone(args),check).then(result=>{check();return {result,principal:{...principal}};});
-    }
-    if(['storage.usage.mine','storage.usage.users'].includes(operation)){
-      const principal=this.principal(token),policy=JSON.stringify(this.store.get(principal.userId));
-      const check=()=>{
-        const current=this.principal(token);
-        if(this.closing||current.userId!==principal.userId||current.role!==principal.role||current.username!==principal.username
-          ||JSON.stringify(this.store.get(current.userId))!==policy)
-          throw Object.assign(Error('账号授权已改变，请刷新后重试。'),{status:403});
-        return current;
-      };
-      this.assertMaintenanceAllowed?.(operation,args,principal);
-      if(this.datasetReadPending>=4)throw Object.assign(Error('空间统计正在读取，请稍后刷新。'),{status:429});
-      this.datasetReadPending++;
-      return storageUsageCall(this,principal,operation,args).then(result=>({result,principal:check()}))
-        .finally(()=>this.datasetReadPending--);
-    }
-    if(['datasets.catalog','datasets.capacity','datasets.overview','datasets.files.list','datasets.training.capabilities','datasets.list','datasets.status','datasets.prepare',
-      'datasets.cache.capabilities','datasets.cache.prepare','datasets.cache.release','datasets.cache.status','datasets.cache.cancel'].includes(operation))return this.datasetRead(token,operation,args);
-    if(typeof operation==='string'&&operation.startsWith('transfers.')){
+    case 'datasetLabel':return this.dataRequests.labels(token,operation,args);
+    case 'terminalExchange':return this.terminalExchange(token,args);
+    case 'datasetDeletion':return this.dataRequests.delete(token,operation,args);
+    case 'storageUsage':return this.dataRequests.usage(token,operation,args);
+    case 'datasetRead':return this.datasetRead(token,operation,args);
+    case 'transfer':{
       const principal=this.principal(token);
       return transferCall(this,principal,operation,args,()=>this.principal(token)).then(result=>({result,principal:{username:principal.username,role:principal.role,userId:principal.userId}}));
     }
     // Remote cloud/DNS requests do not hold the account and scheduler queue.
-    if(typeof operation==='string'&&operation.startsWith('cloud.')&&!operation.startsWith('cloud.auth.'))return this.cloudExchange(token,operation,args);
-    return this.enqueue(async()=>{
+    case 'cloud':return this.cloudExchange(token,operation,args);
+    default:return this.enqueue(()=>this.invokeSerialized(token,operation,args,options));
+    }
+  }
+  async invokeSerialized(token,operation,args,options){
     const principal=this.principal(token),actor=principal.username;
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
     if(typeof operation==='string'&&operation.startsWith('cloud.auth.'))return {result:await cloudImportCall(this,principal,operation,args,()=>{if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});this.principal(token);}),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
@@ -482,7 +417,7 @@ export class PortalService extends DemoService{
     // Execution writes its durable reservation before external side effects. Never
     // restore an older snapshot after a dispatch timeout (that would lose quota).
     if(typeof operation==='string'&&(operation.startsWith('jobs.')||operation.startsWith('host.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('datasets.')||operation.startsWith('projects.'))){
-      const stateless=STATELESS_EXECUTION_RESULTS.has(operation),policy=stateless?JSON.stringify(this.store.get(principal.userId)):null;
+      const stateless=RECEIPT_ONLY_OPERATIONS.has(operation),policy=stateless?JSON.stringify(this.store.get(principal.userId)):null;
       const check=()=>{
         const current=this.principal(token);
         if(this.closing||current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role
@@ -528,7 +463,7 @@ export class PortalService extends DemoService{
       if(['policy.save','users.create','users.enabled','users.role'].includes(operation))this.syncOciAccountEvent();
       return {...result,principal:operation==='logout'?null:{username:principal.username,role:principal.role,userId:principal.userId}};
     }catch(e){this.restore(before);this.sessions=sessions;this.audit(actor,operation,args?.userId||args?.jobId,'denied');throw e;}
-  });}
+  }
   async refreshGPUQ(){
     // Keep one actual file read in flight, even after the response deadline.
     // A stalled filesystem cannot accumulate unbounded background reads.

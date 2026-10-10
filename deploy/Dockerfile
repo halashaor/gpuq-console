@@ -31,6 +31,7 @@ COPY --chown=root:root transfers.mjs ./
 COPY --chown=root:root login-sessions.mjs ./
 COPY --chown=root:root native-task-metadata.mjs job-observation.mjs ./
 COPY --chown=root:root host-root-policy.mjs personal-file-campus.mjs campus-upload-policy.mjs ./
+COPY --chown=root:root portal ./portal
 USER node
 # Load the final image's module graph as its runtime user. Importing the Portal
 # does not start it, open SQLite or contact the execution bridge.
