@@ -63,6 +63,14 @@ try {
   await assert.rejects(nodeAccounts.change({accountId: 'bob', revision: 0, kind: 'enabled', enabled: true}), error => error.code === 'ACCOUNT_CHANGED');
   assert.deepEqual(await nodeAccounts.change({accountId: 'bob', revision: 1, kind: 'enabled', enabled: true}),
     {id: 'bob', role: 'member', enabled: true, revision: 2});
+  const reset = await reopened.evaluate(async () => {
+    const {AccountClient} = await import('/modules/client/account-client.mjs');
+    return new AccountClient({transport}).resetPassword({accountId: 'bob', revision: 2, password: 'new-browser-password'});
+  });
+  assert.deepEqual(reset, {id: 'bob', role: 'member', enabled: true, revision: 3});
+  const memberSession = new SessionClient({transport: new JsonHttpTransport({baseUrl: fixture.baseUrl}), delivery: 'token'});
+  assert.equal((await memberSession.login({username: 'bob', password: 'new-browser-password'})).account.id, 'bob');
+  await memberSession.logout();
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);
   const before = fixture.calls.length;

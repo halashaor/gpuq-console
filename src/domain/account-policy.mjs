@@ -21,3 +21,8 @@ export function requireAccountChange(actor, facts, command, now) {
     throw new ApplicationError('SELF_ACCOUNT_CHANGE');
   }
 }
+
+export function requirePasswordReset(actor, facts, command, now) {
+  requireAccountRead(actor, facts, now);
+  if (facts.target.revision !== command.revision) throw new ApplicationError('ACCOUNT_CHANGED');
+}

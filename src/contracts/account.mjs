@@ -2,6 +2,16 @@ import {InvalidRequest, InvalidResponse} from './errors.mjs';
 
 export const ACCOUNT_CHANGE_ROUTE = '/api/v2/accounts/change';
 export const ACCOUNT_GET_ROUTE = '/api/v2/accounts/get';
+export const PASSWORD_RESET_ROUTE = '/api/v2/accounts/reset-password';
+
+export function parsePasswordReset(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3
+    || !['accountId', 'revision', 'password'].every(key => Object.hasOwn(value, key))) throw new InvalidRequest('request');
+  const {accountId} = parseAccountQuery({accountId: value.accountId});
+  if (!Number.isSafeInteger(value.revision) || value.revision < 0) throw new InvalidRequest('revision');
+  if (typeof value.password !== 'string' || value.password.length < 8 || value.password.length > 128) throw new InvalidRequest('password');
+  return {accountId, revision: value.revision, password: value.password};
+}
 
 export function parseAccountQuery(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1

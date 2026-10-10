@@ -1,6 +1,6 @@
 import {transaction} from './transaction.mjs';
 import {sessionColumns, sessionFrom} from './session-reader.mjs';
-import {requireAccountChange, requireAccountRead} from '../../domain/account-policy.mjs';
+import {requireAccountChange, requireAccountRead, requirePasswordReset} from '../../domain/account-policy.mjs';
 
 function accountFrom(row) {
   return row ? {id: row.id, role: row.role, enabled: row.enabled === 1, revision: row.auth_revision} : null;
@@ -28,6 +28,24 @@ export class SqliteAccounts {
     const facts = this.#facts(actor, accountId);
     requireAccountRead(actor, facts, now);
     return facts.target;
+  }
+
+  authorizePasswordReset(actor, command, now) {
+    requirePasswordReset(actor, this.#facts(actor, command.accountId), command, now);
+  }
+
+  resetPassword(actor, command, now) {
+    const db = this.database;
+    return transaction(db, () => {
+      this.authorizePasswordReset(actor, command, now);
+      const {salt, hash, iterations} = command.password;
+      db.prepare(`INSERT INTO v2_credentials(account_id,salt,hash,iterations,revision) VALUES(?,?,?,?,0)
+        ON CONFLICT(account_id) DO UPDATE SET salt=excluded.salt,hash=excluded.hash,
+          iterations=excluded.iterations,revision=v2_credentials.revision+1`)
+        .run(command.accountId, salt, hash, iterations);
+      db.prepare('UPDATE v2_accounts SET auth_revision=auth_revision+1 WHERE id=?').run(command.accountId);
+      return accountFrom(db.prepare('SELECT * FROM v2_accounts WHERE id=?').get(command.accountId));
+    });
   }
 
   change(actor, command, now) {

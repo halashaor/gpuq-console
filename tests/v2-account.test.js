@@ -5,7 +5,9 @@ import {SessionClient} from '../src/client/session-client.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {SqliteAccounts} from '../src/infrastructure/sqlite/accounts.mjs';
-import {parseAccountChange} from '../src/contracts/account.mjs';
+import {parseAccountChange, parsePasswordReset} from '../src/contracts/account.mjs';
+import {ResetPassword} from '../src/application/reset-password.mjs';
+import {Pbkdf2Passwords} from '../src/infrastructure/passwords.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
@@ -105,4 +107,67 @@ test('lost write receipt is resolved through a fresh account read, not an automa
   assert.equal(f.calls.filter(path => path === '/api/v2/accounts/change').length, 1);
   await assert.rejects(f.member.accounts.get({accountId: 'alice'}), hasCode('UNAUTHENTICATED'));
   await assert.rejects(f.admin.accounts.get({accountId: 'missing'}), hasCode('ACCOUNT_NOT_FOUND'));
+});
+
+test('password reset invalidates all old sessions and only the new password can sign in', async t => {
+  const f = await fixture(t);
+  const other = await f.login('bob');
+  const result = await f.admin.accounts.resetPassword({accountId: 'bob', revision: 0, password: 'new-password'});
+  assert.deepEqual(result, {id: 'bob', role: 'member', enabled: true, revision: 1});
+  await assert.rejects(f.member.session.refresh(), hasCode('UNAUTHENTICATED'));
+  await assert.rejects(other.session.refresh(), hasCode('UNAUTHENTICATED'));
+  await assert.rejects(f.login('bob'), hasCode('INVALID_CREDENTIALS'));
+  assert.equal((await f.member.session.login({username: 'bob', password: 'new-password'})).account.id, 'bob');
+  const stored = f.database.prepare("SELECT * FROM v2_credentials WHERE account_id='bob'").get();
+  assert.equal(stored.revision, 1);
+  assert.equal(JSON.stringify(stored).includes('new-password'), false);
+  await assert.rejects(f.admin.accounts.resetPassword({accountId: 'bob', revision: 0, password: 'another-password'}), hasCode('ACCOUNT_CHANGED'));
+});
+
+test('reset denies members before password work and rechecks administrator/target changes after it', async t => {
+  const f = await fixture(t);
+  const accounts = new SqliteAccounts({database: f.database});
+  const actor = id => ({id, sessionId: f.database.prepare('SELECT id FROM v2_sessions WHERE account_id=?').get(id).id});
+  let calls = 0;
+  const command = {accountId: 'bob', revision: 0, password: 'new-password'};
+  const denied = new ResetPassword({accounts, passwords: {hash: async () => {calls++;}}});
+  await assert.rejects(denied.execute(actor('bob'), command), hasCode('FORBIDDEN'));
+  assert.equal(calls, 0);
+  const original = {...f.database.prepare("SELECT * FROM v2_credentials WHERE account_id='bob'").get()};
+  const derived = await new Pbkdf2Passwords().hash('new-password');
+  for (const [sql, code] of [
+    ["UPDATE v2_accounts SET auth_revision=auth_revision+1 WHERE id='bob'", 'ACCOUNT_CHANGED'],
+    ["UPDATE v2_accounts SET enabled=0 WHERE id='alice'", 'UNAUTHENTICATED'],
+  ]) {
+    const reset = new ResetPassword({accounts, passwords: {hash: async () => {f.database.exec(sql); return derived;}}});
+    await assert.rejects(reset.execute(actor('alice'), command), hasCode(code));
+    assert.deepEqual({...f.database.prepare("SELECT * FROM v2_credentials WHERE account_id='bob'").get()}, original);
+    f.database.exec("UPDATE v2_accounts SET auth_revision=0,enabled=1");
+  }
+});
+
+test('reset transaction cannot leave changed credentials when account revision write fails', async t => {
+  const f = await fixture(t);
+  const before = {...f.database.prepare("SELECT * FROM v2_credentials WHERE account_id='bob'").get()};
+  f.database.exec("CREATE TRIGGER reject_revision BEFORE UPDATE ON v2_accounts BEGIN SELECT RAISE(ABORT,'injected revision failure'); END");
+  await assert.rejects(f.admin.accounts.resetPassword({accountId: 'bob', revision: 0, password: 'new-password'}), hasCode('INTERNAL_ERROR'));
+  assert.deepEqual({...f.database.prepare("SELECT * FROM v2_credentials WHERE account_id='bob'").get()}, before);
+  await f.member.session.refresh();
+  await f.login('bob');
+});
+
+test('reset contract preserves password bytes and rejects weak or injected fields', () => {
+  const command = {accountId: 'bob', revision: 0, password: ' with spaces '};
+  assert.equal(parsePasswordReset(command).password, command.password);
+  for (const value of [{...command, password: 'short'}, {...command, password: 'x'.repeat(129)}, {...command, actor: 'alice'}]) {
+    assert.throws(() => parsePasswordReset(value), hasCode('INVALID_REQUEST'));
+  }
+});
+
+test('administrator self-reset is permitted but also invalidates the issuing session', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.admin.accounts.resetPassword({accountId: 'alice', revision: 0, password: 'new-admin-password'})).revision, 1);
+  await assert.rejects(f.admin.session.refresh(), hasCode('UNAUTHENTICATED'));
+  await f.admin.session.login({username: 'alice', password: 'new-admin-password'});
+  assert.equal((await f.admin.accounts.get({accountId: 'alice'})).role, 'admin');
 });
