@@ -1,7 +1,4 @@
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-
-const run = promisify(execFile);
+import {spawn} from 'node:child_process';
 
 /** Bounded local JSON IPC; callers choose fixed programs/arguments, never a shell. */
 export async function jsonProcess({program, args, input, timeoutMs = 5000, maxBytes = 8192}) {
@@ -9,11 +6,46 @@ export async function jsonProcess({program, args, input, timeoutMs = 5000, maxBy
     || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new TypeError('Invalid native process bounds');
   const body = JSON.stringify(input);
   if (Buffer.byteLength(body) > maxBytes) throw Object.assign(new Error('Native request too large'), {code: 'NATIVE_REQUEST_TOO_LARGE'});
-  const running = run(program, args, {encoding: 'utf8', timeout: timeoutMs, maxBuffer: maxBytes});
-  let inputError;
-  running.child.stdin.once('error', error => {inputError = error;});
-  running.child.stdin.end(body);
-  const {stdout} = await running;
-  if (inputError) throw inputError;
-  return JSON.parse(stdout);
+  if (process.platform === 'win32') throw new Error('Native query supervision requires POSIX process groups');
+  return new Promise((resolve, reject) => {
+    // Only fixed, trusted query helpers belong here. This is not a job runner:
+    // descendants must stay in this group and may not outlive the query.
+    const child = spawn(program, args, {detached: true, stdio: ['pipe', 'pipe', 'pipe']});
+    const output = [];
+    let failure;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    function terminate() {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') failure ??= error; }
+    }
+    function fail(error) {
+      failure ??= error;
+      terminate();
+    }
+    const timer = setTimeout(() => fail(Object.assign(new Error('Native query timed out'),
+      {code: 'ETIMEDOUT', killed: true})), timeoutMs);
+    child.stdout.on('data', chunk => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBytes) fail(Object.assign(new Error('Native stdout too large'), {code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'}));
+      else output.push(chunk);
+    });
+    child.stderr.on('data', chunk => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBytes) fail(Object.assign(new Error('Native stderr too large'), {code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'}));
+    });
+    child.stdin.on('error', fail);
+    child.on('error', fail);
+    child.on('exit', terminate);
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (failure) return reject(failure);
+      const stdout = Buffer.concat(output).toString('utf8');
+      if (code !== 0) return reject(Object.assign(new Error('Native query failed'), {code, signal, stdout}));
+      try { resolve(JSON.parse(stdout)); }
+      catch (error) { reject(error); }
+    });
+    child.stdin.end(body);
+  });
 }
