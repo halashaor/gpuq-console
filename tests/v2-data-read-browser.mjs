@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {assembleDataRead} from '../src/bootstrap/data-read.mjs';
+import {LocalSourceReader} from '../src/infrastructure/local-source-reader.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
 import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
@@ -20,7 +21,7 @@ const handler=assembleDataRead({
     throw new ApplicationError('UNAUTHENTICATED');
   },
   access:{requireRead:async()=>{if(!allowed)throw new ApplicationError('FORBIDDEN');}},
-  catalog:{find:async()=>{lookups++;return {hostPath:source};}},reportError:error=>errors.push(error),
+  sources:new LocalSourceReader({machineId:'node-1',catalog:{find:async()=>{lookups++;return {hostPath:source};}}}),reportError:error=>errors.push(error),
 });
 const modules=new Map(['client/data-client.mjs','client/http-transport.mjs','client/session.mjs','client/errors.mjs','contracts/data-read.mjs'].map(name=>['/modules/'+name,new URL('../src/'+name,import.meta.url)]));
 const server=http.createServer(async(req,res)=>{

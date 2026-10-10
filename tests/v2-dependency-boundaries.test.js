@@ -5,7 +5,7 @@ import {resolve,relative,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root=fileURLToPath(new URL('../src/',import.meta.url));
-const dependencies={contracts:[],domain:[],application:['application','domain'],
+const dependencies={contracts:['contracts'],domain:['domain'],application:['application','domain'],
   infrastructure:['infrastructure','application','domain'],api:['api','contracts','application','domain'],
   client:['client','contracts'],bootstrap:['bootstrap','api','application','infrastructure','domain']};
 async function files(directory){const result=[];for(const entry of await readdir(directory,{withFileTypes:true})){

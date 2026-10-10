@@ -1,0 +1,19 @@
+import {AuthenticateSession} from '../application/authenticate-session.mjs';
+import {DataReadAccess} from '../application/data-read-access.mjs';
+import {SqliteSessionReader,SqliteDataAuthority,SqliteSourceCatalog} from '../infrastructure/sqlite/data-read-repositories.mjs';
+import {createSessionAuthenticator} from '../api/session-authenticator.mjs';
+import {assembleDataRead} from './data-read.mjs';
+import {LocalSourceReader} from '../infrastructure/local-source-reader.mjs';
+
+// Node-local composition. A VPS must supply a remote source adapter instead.
+// Database ownership/migrations stay with the caller. This only composes reads.
+export function assembleLocalSqliteDataRead({database,machineId,publicOrigin,clock=Date.now,reportError}){
+  const sessions=new SqliteSessionReader({database});
+  const authority=new SqliteDataAuthority({database});
+  const catalog=new SqliteSourceCatalog({database});
+  const authenticateSession=new AuthenticateSession({sessions,clock});
+  const authenticate=createSessionAuthenticator({authenticateSession,publicOrigin});
+  const access=new DataReadAccess({authority,clock});
+  const sources=new LocalSourceReader({machineId,catalog});
+  return assembleDataRead({authenticate,access,sources,reportError});
+}

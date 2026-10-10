@@ -1,7 +1,7 @@
 import {DATA_READ_ROUTE,parseDataReadRequest,InvalidRequest} from '../contracts/data-read.mjs';
 import {ApplicationError} from '../domain/errors.mjs';
 
-const statusByCode={UNAUTHENTICATED:401,FORBIDDEN:403,SOURCE_UNAVAILABLE:503};
+const statusByCode={UNAUTHENTICATED:401,FORBIDDEN:403,SOURCE_UNAVAILABLE:503,SOURCE_NODE_MISMATCH:503};
 const reply=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
 
 async function readJson(req){

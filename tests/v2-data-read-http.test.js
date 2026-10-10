@@ -5,6 +5,7 @@ import {mkdtemp,writeFile,mkdir,readFile,readdir,stat,rm} from 'node:fs/promises
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {assembleDataRead} from '../src/bootstrap/data-read.mjs';
+import {LocalSourceReader} from '../src/infrastructure/local-source-reader.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
 import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport,ApiError} from '../src/client/http-transport.mjs';
@@ -19,7 +20,7 @@ async function fixture(t){
   const handler=assembleDataRead({
     authenticate:async req=>{if(req.headers.authorization==='Bearer fixture'||req.headers.cookie==='session=fixture')return {id:'member'};throw new ApplicationError('UNAUTHENTICATED');},
     access:{requireRead:async(actor,r)=>{actors.push(actor.id);if(!granted||actor.id!=='member'||r.machineId!=='node-1')throw new ApplicationError('FORBIDDEN');}},
-    catalog:{find:async r=>{lookups++;return rows.get(JSON.stringify(r));}},reportError:e=>errors.push(e),
+    sources:new LocalSourceReader({machineId:'node-1',catalog:{find:async r=>{lookups++;return rows.get(JSON.stringify(r));}}}),reportError:e=>errors.push(e),
   });
   const server=http.createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const baseUrl=`http://127.0.0.1:${server.address().port}`;

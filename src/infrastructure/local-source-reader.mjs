@@ -8,9 +8,13 @@ import {ApplicationError} from '../domain/errors.mjs';
  * A managed version needs its catalogue's READY proof as well as a directory.
  */
 export class LocalSourceReader{
-  constructor({catalog}){this.catalog=catalog;}
+  constructor({machineId,catalog}){
+    if(typeof machineId!=='string'||!machineId)throw new TypeError('Local machineId is required');
+    this.machineId=machineId;this.catalog=catalog;
+  }
 
   async inspect(request){
+    if(request.machineId!==this.machineId)throw new ApplicationError('SOURCE_NODE_MISMATCH');
     const source=await this.catalog.find(request);
     if(!source)return {availability:'missing',reason:'not-found'};
     if(request.source.kind!=='directory'&&source.ready!==true)return {availability:'unavailable',reason:'not-ready'};

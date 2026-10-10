@@ -7,3 +7,13 @@ export function containerPathFor(source){
     default:throw Error('Unsupported internal data source');
   }
 }
+
+// Warehouse and cache are locations of the same dataset permission resource.
+export function permissionResourceFor({machineId,source}){
+  switch(source.kind){
+    case 'directory':return {kind:'directory',machineId,sourceId:source.sourceId,version:null};
+    case 'warehouse':
+    case 'cache':return {kind:'dataset',machineId:null,sourceId:source.datasetId,version:source.version};
+    default:throw Error('Unsupported internal data source');
+  }
+}
