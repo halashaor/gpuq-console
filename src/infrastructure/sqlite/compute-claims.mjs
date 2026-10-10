@@ -58,22 +58,26 @@ export class SqliteComputeClaims {
     });
   }
 
-  claim(actor, {jobId, machineId, gpuCount}, now) {
-    return transaction(this.database, () => {
-      const session = this.#authorize(actor, now), db = this.database;
-      if (!Number.isSafeInteger(gpuCount) || gpuCount < 1 || gpuCount > 4096) throw new ApplicationError('INVALID_COMPUTE_CLAIM');
-      const job = db.prepare('SELECT account_id FROM v2_training_requests WHERE job_id=?').get(jobId);
-      if (!job || job.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
-      const existing = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
-      if (existing) {
-        if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
-        return receipt(existing);
-      }
-      const balance = this.#balance(actor, machineId, session);
-      if (gpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
-      db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, now);
-      return receipt(db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId));
-    });
+  claim(actor, command, now) {
+    return transaction(this.database, () => this.claimWithinTransaction(actor, command, now));
+  }
+
+  /** Caller owns BEGIN IMMEDIATE; new dispatch preparation also rechecks existing holds. */
+  claimWithinTransaction(actor, {jobId, machineId, gpuCount}, now, {requireCurrentAccess = false} = {}) {
+    const session = this.#authorize(actor, now), db = this.database;
+    if (!Number.isSafeInteger(gpuCount) || gpuCount < 1 || gpuCount > 4096) throw new ApplicationError('INVALID_COMPUTE_CLAIM');
+    const job = db.prepare('SELECT account_id FROM v2_training_requests WHERE job_id=?').get(jobId);
+    if (!job || job.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+    const existing = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
+    if (existing) {
+      if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
+      if (requireCurrentAccess) this.#balance(actor, machineId, session);
+      return receipt(existing);
+    }
+    const balance = this.#balance(actor, machineId, session);
+    if (gpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
+    db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, now);
+    return receipt(db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId));
   }
 
   get(actor, jobId, now) {

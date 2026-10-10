@@ -46,6 +46,7 @@
 - `ObserveTrainingResources`：先用原生 GPUQ 规则校验请求意图，再按节点池大小和配置上限筛选合法卡数；不改写原 batch／弹性边界。候选筛选组合此用例，忙池仍可等待，exclusiveFreeFitGpuCount 只表示瞬时独占空闲卡适配，不含抢占、共享显存、用户已占额度或租约。
 - `SqliteComputeClaims`／`computeBalance`：独立用户额度账本，同事务核对当前权限／限额、统计 HELD 记录并预留额度；按任务幂等，不是 GPU 租约。新账本默认未就绪，旧占用导入和切换完成前不能新预留。没有超时返还、公共释放或启用接口，未接正式派发；原回执恢复不代表重新获得执行权限。
 - `trainingQuotaFit`：候选节点查询完成后，从同一读事务取得各机额度余额，与合法卡数求交集，返回 quotaFit。额度不足保留等待候选；未就绪／缺失余额不按无限额度处理。resourceFit 保留物理／配置观察，quotaFit 仍非派发许可，实际预留需使用原子 claim。
+- `SqliteTrainingDispatches`：同一写事务预留额度并记录每任务唯一 PREPARED 派发编号，失败一起回滚；通过原编号恢复，不自动换机。仅内部持久意图，不发送节点请求；额度原回执不能绕过当前授权来新建派发，PREPARED 也不是执行许可。任务原载荷仍由不可变输入记录持有。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
