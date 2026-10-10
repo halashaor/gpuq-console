@@ -6,6 +6,13 @@ export function createDataAccessSchema(database) {
   transaction(database, () => database.exec('ALTER TABLE v2_data_resources ADD COLUMN acl_revision INTEGER NOT NULL DEFAULT 0 CHECK(acl_revision>=0)'));
 }
 
+/** Called only inside an authorized writer transaction. */
+export function replaceDataReaders(database, resourceId, readers) {
+  database.prepare('DELETE FROM v2_data_readers WHERE resource_id=?').run(resourceId);
+  for (const id of readers) database.prepare('INSERT INTO v2_data_readers(resource_id,account_id) VALUES(?,?)').run(resourceId, id);
+  database.prepare('UPDATE v2_data_resources SET acl_revision=acl_revision+1 WHERE id=?').run(resourceId);
+}
+
 export class SqliteDataAccess {
   constructor({database}) {this.database = database;}
 
@@ -38,9 +45,7 @@ export class SqliteDataAccess {
       requireDataAccessManagement(actor, facts, now);
       facts.knownReaders = command.readers.filter(id => db.prepare('SELECT 1 FROM v2_accounts WHERE id=?').get(id)).length;
       requireDataReadersChange(facts, command);
-      db.prepare('DELETE FROM v2_data_readers WHERE resource_id=?').run(command.resourceId);
-      for (const id of command.readers) db.prepare('INSERT INTO v2_data_readers(resource_id,account_id) VALUES(?,?)').run(command.resourceId, id);
-      db.prepare('UPDATE v2_data_resources SET acl_revision=acl_revision+1 WHERE id=?').run(command.resourceId);
+      replaceDataReaders(db, command.resourceId, command.readers);
       return this.#read({...facts.resource, revision: facts.resource.revision + 1});
     });
   }

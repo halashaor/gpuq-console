@@ -38,5 +38,7 @@ export function planDataAccessImport({resource, observations, accountMapping, kn
   const current = [...new Set([resource.ownerId, ...resource.readers])].sort();
   if ((resource.revision > 0 || resource.readers.length) && JSON.stringify(current) !== JSON.stringify(accounts)) return blocked('EXISTING_V2_ACL_CONFLICT');
   return {state: 'proposed', resourceId: resource.resourceId, expectedRevision: resource.revision, ownerId: resource.ownerId,
-    readers, snapshots: observations.map(({machineId, source, snapshotId}) => ({machineId, source: {...source}, snapshotId}))};
+    readers, accountMapping: [...new Set(observations.flatMap(row => row.legacyOwners))].sort()
+      .map(legacyId => ({legacyId, accountId: mapping.get(legacyId)})),
+    snapshots: observations.map(({machineId, source, snapshotId}) => ({machineId, source: {...source}, snapshotId}))};
 }
