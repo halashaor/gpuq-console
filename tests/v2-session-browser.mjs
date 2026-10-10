@@ -7,6 +7,7 @@ import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
 import {ComputePolicyClient} from '../src/client/compute-policy-client.mjs';
 import {DataAccessClient} from '../src/client/data-access-client.mjs';
+import {DirectoryClient} from '../src/client/directory-client.mjs';
 
 const fixture = await sessionFixture({admin: true});
 const browser = await chromium.launch({headless: true});
@@ -54,6 +55,12 @@ try {
     return sessionClient.restore();
   });
   assert.deepEqual(restoredIdentity, browserLogin);
+  const directory = await reopened.evaluate(async () => {
+    const {DirectoryClient} = await import('/modules/client/directory-client.mjs');
+    return new DirectoryClient({transport}).register({machineId: 'node-1', sourceId: 'existing'});
+  });
+  assert.deepEqual(directory, await new DirectoryClient({transport}).register({machineId: 'node-1', sourceId: 'existing'}));
+  assert.equal((await new DataClient({transport}).resolveReadLocation({machineId: 'node-1', source: {kind: 'directory', sourceId: 'existing'}})).availability, 'available');
   assert.deepEqual(await reopened.evaluate(request => dataClient.resolveReadLocation(request), readRequest), nodeRead);
   fixture.database.exec("INSERT INTO v2_accounts(id,username,display_name) VALUES('bob','bob','Bob')");
   const browserChange = await reopened.evaluate(async () => {

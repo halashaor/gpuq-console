@@ -63,4 +63,10 @@ test('real CLI accounts command returns the administrator-visible names and pagi
   const response = await run([...args, 'accounts', '--limit', '1']);
   assert.equal(response.code, 0, response.stderr);
   assert.deepEqual(JSON.parse(response.stdout), {accounts: [{id: 'alice', username: 'alice', displayName: 'Alice', role: 'admin', enabled: true, revision: 0}], nextCursor: null});
+  const registered = await run([...args, 'register-directory', '--machine', 'node-1', '--source', 'existing']);
+  assert.equal(registered.code, 0, registered.stderr);
+  assert.equal(JSON.parse(registered.stdout).registered, true);
+  const read = await run([...args, 'read', '--machine', 'node-1', '--kind', 'directory', '--source', 'existing']);
+  assert.equal(read.code, 0, read.stderr);
+  assert.equal(JSON.parse(read.stdout).location.containerPath, '/datasets/existing');
 });

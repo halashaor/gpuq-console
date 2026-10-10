@@ -4,12 +4,14 @@ import {JsonHttpTransport} from '../client/http-transport.mjs';
 import {SessionClient} from '../client/session-client.mjs';
 import {DataClient} from '../client/data-client.mjs';
 import {AccountClient} from '../client/account-client.mjs';
+import {DirectoryClient} from '../client/directory-client.mjs';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
   --url ORIGIN --credentials FILE current
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
+  --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
   --url ORIGIN --credentials FILE read --machine ID --kind directory --source ID
   --url ORIGIN --credentials FILE read --machine ID --kind warehouse|cache --dataset ID --version SHA256
 Credentials parent directory must already exist. Password is read from stdin, never an argument.
@@ -37,7 +39,7 @@ export async function runCli({argv, stdin, stdout}) {
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
-  if (positionals.length !== 1 || !['login', 'current', 'logout', 'read', 'accounts'].includes(command)
+  if (positionals.length !== 1 || !['login', 'current', 'logout', 'read', 'accounts', 'register-directory'].includes(command)
     || !values.url || !values.credentials) throw new Error('Specify command, --url and --credentials; see --help');
   if (command === 'login' && (!values.username || !values['password-stdin'])) {
     throw new Error('Login requires --username and --password-stdin');
@@ -58,6 +60,7 @@ export async function runCli({argv, stdin, stdout}) {
         const expiry = await session.refresh();
         if (command === 'current') result = {...identity, ...expiry};
         else if (command === 'accounts') result = await new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)});
+        else if (command === 'register-directory') result = await new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source});
         else {
           const source = values.kind === 'directory'
             ? {kind: values.kind, sourceId: values.source}

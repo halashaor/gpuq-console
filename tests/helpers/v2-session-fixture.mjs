@@ -13,6 +13,7 @@ import {assembleSqliteComputePolicy} from '../../src/bootstrap/sqlite-compute-po
 import {createComputePolicySchema} from '../../src/infrastructure/sqlite/compute-policy-schema.mjs';
 import {createDataAccessSchema} from '../../src/infrastructure/sqlite/data-access.mjs';
 import {assembleSqliteDataAccess} from '../../src/bootstrap/sqlite-data-access.mjs';
+import {assembleSqliteDirectoryRegistration} from '../../src/bootstrap/sqlite-directory-registration.mjs';
 
 export const readRequest = {machineId: 'node-1', source: {kind: 'directory', sourceId: 'images'}};
 export const loginRequest = {username: 'alice', password: 'fixture-password'};
@@ -42,8 +43,9 @@ export async function sessionFixture({admin = false} = {}) {
     'client/account-client.mjs', 'contracts/account.mjs',
     'client/compute-policy-client.mjs', 'contracts/compute-policy.mjs',
     'client/data-access-client.mjs', 'contracts/data-access.mjs',
+    'client/directory-client.mjs', 'contracts/directory-registration.mjs',
   ].map(name => ['/modules/' + name, new URL('../../src/' + name, import.meta.url)]));
-  let sessionHandler, dataHandler, accountHandler, computeHandler, accessHandler, now = Date.now();
+  let sessionHandler, dataHandler, accountHandler, computeHandler, accessHandler, registrationHandler, now = Date.now();
   const errors = [], calls = [];
   const server = http.createServer(async (req, res) => {
     calls.push(req.url);
@@ -53,6 +55,8 @@ export async function sessionFixture({admin = false} = {}) {
     } else if (modules.has(req.url)) {
       res.writeHead(200, {'Content-Type': 'text/javascript'});
       res.end(await readFile(modules.get(req.url)));
+    } else if (req.url === '/api/v2/data/register-directory') {
+      await registrationHandler(req, res);
     } else if (req.url.startsWith('/api/v2/data-access/')) {
       await accessHandler(req, res);
     } else if (req.url.startsWith('/api/v2/compute-policy/')) {
@@ -72,6 +76,11 @@ export async function sessionFixture({admin = false} = {}) {
   accountHandler = assembleSqliteAccount(common);
   computeHandler = assembleSqliteComputePolicy(common);
   accessHandler = assembleSqliteDataAccess(common);
+  registrationHandler = assembleSqliteDirectoryRegistration({...common, configuredDirectories: [
+    {machineId: 'node-1', sourceId: 'existing', hostPath: source, visibility: 'shared', ownerId: null},
+    {machineId: 'node-1', sourceId: 'missing', hostPath: join(directory, 'not-present'), visibility: 'shared', ownerId: null},
+    {machineId: 'unlisted', sourceId: 'existing', hostPath: source, visibility: 'shared', ownerId: null},
+  ]});
   dataHandler = assembleLocalSqliteDataRead({...common, machineId: 'node-1'});
   return {
     database, baseUrl, errors, calls, advance: ms => now += ms,
