@@ -3,7 +3,7 @@ import * as campusNative from './client-campus-native.mjs';
 
 const MAX_REQUEST=1024**2,MAX_RESPONSE=64*1024**2;
 const rejected=code=>Object.assign(Error(`Platform Windows control transport stopped (${code}); keep the original operation identity`),{code});
-const apiPaths=new Set(['/api/login','/api/logout','/api/register','/api/call']);
+const apiPaths=new Set(['/api/login','/api/logout','/api/register','/api/call','/__preview__/api/call']);
 // Call only after the command has decided its business result. Shutdown can
 // neither revoke a complete server receipt nor replace an original error.
 // Request/abort cleanup below remains strict while the outcome is undecided.

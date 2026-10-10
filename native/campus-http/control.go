@@ -44,7 +44,7 @@ func validateControl(f frame) error {
 	if e != nil || (u.Port() != "" && u.Port() != "443") {
 		return errors.New("INVALID_CONTROL_ORIGIN")
 	}
-	if c.Path != "/api/call" && c.Path != "/api/login" && c.Path != "/api/logout" && c.Path != "/api/register" {
+	if c.Path != "/api/call" && c.Path != "/__preview__/api/call" && c.Path != "/api/login" && c.Path != "/api/logout" && c.Path != "/api/register" {
 		return errors.New("INVALID_CONTROL_PATH")
 	}
 	if len(c.Token) > 8192 || (c.Token != "" && !ticketRE.MatchString(c.Token)) {
@@ -59,7 +59,7 @@ func controlBodyAllowed(path string, body []byte) bool {
 	if json.Unmarshal(body, &fields) != nil || fields == nil {
 		return false
 	}
-	if path != "/api/call" {
+	if path != "/api/call" && path != "/__preview__/api/call" {
 		return true
 	}
 	if len(fields) != 2 || fields["operation"] == nil || fields["args"] == nil {
@@ -81,7 +81,7 @@ func controlRequestTimeout(path string, body []byte) time.Duration {
 	var call struct {
 		Operation string `json:"operation"`
 	}
-	if path == "/api/call" && json.Unmarshal(body, &call) == nil && call.Operation == "projects.publish" {
+	if (path == "/api/call" || path == "/__preview__/api/call") && json.Unmarshal(body, &call) == nil && call.Operation == "projects.publish" {
 		return 180 * time.Second
 	}
 	return 30 * time.Second
