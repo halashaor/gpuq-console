@@ -59,6 +59,7 @@
 - 原生 GPUQ `submission_receipt`：按持久 submit_key 查询既有任务 ID、原生提交摘要与少量元数据；不重提任务、不返回 argv/env，维护门关闭时仍可只读查询。submit_digest 是原生执行请求摘要，不等于 V2 requestHash；两者的固定派发映射仍需节点登记层绑定。
 - `SqliteNodeDispatchBindings`／`LookupNodeDispatch`：节点独立保存平台身份与原生提交身份的不可变映射，原生 submit_key 固定为派发 UUID；`GpuqReceiptReader` 只调用原生 submission_receipt，完整匹配后才投影平台接收回执。查询不补建映射、不扫描任务或重提。绑定写入口仅供可信启动构建器，尚未开放 HTTP 或接入实际启动。
 - `HttpDispatchReceipts`／`assembleDispatchReceipt`：独立节点凭据、固定内部 receipt 路由，请求仅机器／派发 ID；原生回执经共享契约投影并校验后供协调器核对。数据库、socket 和服务生命周期由节点组装参数控制；没有公共写入证明、发送或重试入口。
+- `GpuqLaunchSpec`：仅供节点可信启动构建器，将原生参数交给现有 validate_submission 规范化并复用 Store 摘要算法；检查 cwd／可执行路径和资源规则，但不执行命令、开数据库或提交任务。返回的 argv/env 是私有执行材料，不能直接暴露为公开接口或让用户指定宿主运行器。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

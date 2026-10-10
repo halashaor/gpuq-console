@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import threading
+import sys
+import uuid
 import unittest
 from unittest.mock import patch
 
@@ -12,7 +14,8 @@ F = importlib.util.module_from_spec(loader)
 loader.loader.exec_module(F)
 from gpuq.protocol import Client
 from gpuq.rpc import ApiError, _ThreadingUnixServer
-from gpuq.store import Store, StoreConflictError
+from gpuq.store import Store, StoreConflictError, normalized_submission_digest
+from gpuq.submission import validate_submission
 
 
 class SubmissionReceiptTests(unittest.TestCase):
@@ -71,6 +74,29 @@ class SubmissionReceiptTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join(5)
         self.assertFalse(thread.is_alive())
+
+    def test_precomputed_digest_matches_actual_store_receipts_for_native_modes(self):
+        cases = [{}, {'preempt_opt_in_only': True, 'yield_policy': 'now'},
+                 {'gpu_count': 4, 'min_gpu_count': 1, 'elastic_gpu_count': True, 'auto_scale_up': True,
+                  'target_global_batch_size': 64, 'per_device_micro_batch_size': 4,
+                  'checkpoint_capability': 'epoch-v1', 'restart_policy': 'on-preempt', 'yield_policy': 'save'},
+                 {'placement': 'pinned', 'requested_gpu_uuids': ['GPU-1'], 'share_gpu': True, 'vram_mb': 1024},
+                 {'placement': 'pinned', 'requested_gpu_uuids': ['GPU-1'], 'share_gpu': True, 'vram_mb': 1024,
+                  'hami_core': True, 'sm_percent': 30}]
+        for case in cases:
+            with self.subTest(case=case):
+                raw = {'submit_key': str(uuid.uuid4()), 'name': 'digest-test', 'owner': 'test-user',
+                       'priority': 2, 'dispatch_mode': 'queue', 'yield_policy': 'never',
+                       'checkpoint_capability': 'none', 'restart_policy': 'never',
+                       'gpu_count': 1, 'placement': 'any', 'requested_gpu_uuids': [],
+                       'argv': [sys.executable, '-c', 'never executed'], 'cwd': str(self.root),
+                       'env': {'Z': 'last', 'A': 'first'}, **case}
+                clean = validate_submission(raw, 4, managed_gpu_uuids=self.config.managed_gpu_uuids)
+                digest = normalized_submission_digest(clean)
+                self.store.submit_job(clean)
+                self.assertEqual(digest, self.store.get_submission_receipt(clean['submit_key'])['submit_digest'])
+                self.assertEqual(digest, normalized_submission_digest({**clean, 'env': {'A': 'first', 'Z': 'last'}}))
+                self.assertNotEqual(digest, normalized_submission_digest({**clean, 'argv': [*clean['argv'], '--different']}))
 
 
 if __name__ == '__main__':

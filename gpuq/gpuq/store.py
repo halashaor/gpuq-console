@@ -246,6 +246,28 @@ def _submission_digest(
     return _digest(*parts)
 
 
+def normalized_submission_digest(submission: Mapping[str, Any]) -> str:
+    """Hash validate_submission output using the same primitives as Store.submit_job.
+
+    No database or process operations. Callers must validate/normalize first;
+    the submit key is a separate identity and is not part of the payload digest.
+    """
+    return _submission_digest(
+        name=submission['name'], owner=submission['owner'], priority=submission['priority'],
+        dispatch_mode=submission['dispatch_mode'], checkpoint_capability=submission['checkpoint_capability'],
+        restart_policy=submission['restart_policy'], gpu_count=submission['gpu_count'],
+        min_gpu_count=submission['min_gpu_count'], elastic_gpu_count=submission['elastic_gpu_count'],
+        auto_scale_up=submission['auto_scale_up'], target_global_batch_size=submission['target_global_batch_size'],
+        per_device_micro_batch_size=submission['per_device_micro_batch_size'], placement=submission['placement'],
+        requested_gpu_uuids_json=_json_dump(submission['requested_gpu_uuids']), argv_json=_json_dump(submission['argv']),
+        cwd=submission['cwd'], env_json=_json_dump(submission['env']),
+        share_gpu=submission.get('share_gpu', False), vram_mb=submission.get('vram_mb'),
+        hami_core=submission.get('hami_core', False), sm_percent=submission.get('sm_percent'),
+        yield_policy=submission.get('yield_policy', 'legacy'), preempt_idle_only=submission.get('preempt_idle_only', False),
+        preempt_opt_in_only=submission.get('preempt_opt_in_only', False),
+    )
+
+
 def _nonempty(value: Any, field: str, *, maximum: int = 4096) -> str:
     if not isinstance(value, str) or not value or len(value) > maximum:
         raise ValueError(f"{field} must be a non-empty string")
