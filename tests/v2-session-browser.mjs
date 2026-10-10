@@ -5,6 +5,7 @@ import {SessionClient} from '../src/client/session-client.mjs';
 import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
+import {ComputePolicyClient} from '../src/client/compute-policy-client.mjs';
 
 const fixture = await sessionFixture({admin: true});
 const browser = await chromium.launch({headless: true});
@@ -70,6 +71,18 @@ try {
   assert.deepEqual(reset, {id: 'bob', role: 'member', enabled: true, revision: 3});
   const memberSession = new SessionClient({transport: new JsonHttpTransport({baseUrl: fixture.baseUrl}), delivery: 'token'});
   assert.equal((await memberSession.login({username: 'bob', password: 'new-browser-password'})).account.id, 'bob');
+  fixture.database.exec("UPDATE v2_machines SET cards=8 WHERE id='node-1'");
+  const granted = await reopened.evaluate(async () => {
+    const {ComputePolicyClient} = await import('/modules/client/compute-policy-client.mjs');
+    return new ComputePolicyClient({transport}).set({accountId: 'bob', revision: 0, totalCards: 2,
+      limits: [{machineId: 'node-1', maxCards: 2}]});
+  });
+  const nodePolicies = new ComputePolicyClient({transport});
+  assert.deepEqual(await nodePolicies.get({accountId: 'bob'}), granted);
+  const memberData = new DataClient({transport: memberSession.transport});
+  assert.equal((await memberData.resolveReadLocation(readRequest)).availability, 'available');
+  await nodePolicies.set({accountId: 'bob', revision: 1, totalCards: 0, limits: []});
+  await assert.rejects(memberData.resolveReadLocation(readRequest), error => error.code === 'FORBIDDEN');
   await memberSession.logout();
   const created = await reopened.evaluate(async () => {
     const {AccountClient} = await import('/modules/client/account-client.mjs');
