@@ -2430,6 +2430,16 @@ class Store:
             ).fetchone()
         return None if row is None else self._job(row)
 
+    def get_submission_receipt(self, submit_key: str) -> dict[str, Any] | None:
+        """Read the durable submission identity without command/environment data."""
+        key = _nonempty(submit_key, 'submit_key', maximum=256)
+        with self._read_connection() as connection:
+            row = connection.execute(
+                'SELECT id AS job_id,submit_key,submit_digest,owner,name,gpu_count,state '
+                'FROM jobs WHERE submit_key=?', (key,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def list_jobs(
         self,
         *,
