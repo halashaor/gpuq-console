@@ -7,6 +7,11 @@ function profile(row) {
   return {id: row.id, username: row.username, displayName: row.display_name, role: row.role};
 }
 
+const activeSessionQuery = `SELECT a.id,a.username,a.display_name,a.role,s.expires_at_ms,s.touched_at_ms
+  FROM v2_sessions s JOIN v2_accounts a ON a.id=s.account_id
+  WHERE s.id=? AND s.account_id=? AND s.revoked=0
+    AND a.enabled=1 AND s.auth_revision=a.auth_revision AND s.expires_at_ms>?`;
+
 export class SqliteLoginAccounts {
   constructor({database}) {
     this.lookup = database.prepare(credentialsQuery + ' WHERE a.username=?');
@@ -48,6 +53,11 @@ export class SqliteLoginSessions {
     this.database = database;
   }
 
+  current(actor, now) {
+    const row = this.database.prepare(activeSessionQuery).get(actor.sessionId, actor.id, now);
+    return row ? {account: profile(row), expiresAtMs: row.expires_at_ms} : null;
+  }
+
   // Password verification awaits; recheck identity atomically with session issuance.
   issue({account, token, now, policy}) {
     const db = this.database;
@@ -72,9 +82,7 @@ export class SqliteLoginSessions {
   refresh(actor, now, policy) {
     const db = this.database;
     return transaction(db, () => {
-      const row = db.prepare(`SELECT s.expires_at_ms,s.touched_at_ms FROM v2_sessions s
-        JOIN v2_accounts a ON a.id=s.account_id WHERE s.id=? AND s.account_id=? AND s.revoked=0
-        AND a.enabled=1 AND s.auth_revision=a.auth_revision AND s.expires_at_ms>?`).get(actor.sessionId, actor.id, now);
+      const row = db.prepare(activeSessionQuery).get(actor.sessionId, actor.id, now);
       if (!row) return null;
       if (now - row.touched_at_ms < policy.touchMs) return {expiresAtMs: row.expires_at_ms};
       const expiresAtMs = now + policy.idleMs;

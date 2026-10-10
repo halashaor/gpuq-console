@@ -41,15 +41,16 @@ try {
   const reopened = await restored.newPage();
   reopened.on('pageerror', error => fixture.errors.push(error));
   await reopened.goto(fixture.baseUrl);
-  await reopened.evaluate(async () => {
+  const restoredIdentity = await reopened.evaluate(async () => {
     const {JsonHttpTransport} = await import('/modules/client/http-transport.mjs');
     const {SessionClient} = await import('/modules/client/session-client.mjs');
     const {DataClient} = await import('/modules/client/data-client.mjs');
     globalThis.transport = new JsonHttpTransport({baseUrl: location.origin});
     globalThis.sessionClient = new SessionClient({transport, delivery: 'cookie'});
     globalThis.dataClient = new DataClient({transport});
-    await sessionClient.refresh();
+    return sessionClient.restore();
   });
+  assert.deepEqual(restoredIdentity, browserLogin);
   assert.deepEqual(await reopened.evaluate(request => dataClient.resolveReadLocation(request), readRequest), nodeRead);
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);

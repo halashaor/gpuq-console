@@ -2,6 +2,7 @@ import {InvalidRequest, InvalidResponse} from './errors.mjs';
 
 export const SESSION_ROUTES = {
   login: '/api/v2/session/login',
+  current: '/api/v2/session/current',
   refresh: '/api/v2/session/refresh',
   logout: '/api/v2/session/logout',
 };
@@ -35,13 +36,20 @@ export function parseLoginResult(value, delivery) {
   if (!exactFields(value, delivery === 'token' ? ['account', 'expiresAtMs', 'credential'] : ['account', 'expiresAtMs'])) {
     throw new InvalidResponse();
   }
+  const current = parseCurrentSessionResult({account: value.account, expiresAtMs: value.expiresAtMs});
+  if (delivery === 'token' && (typeof value.credential !== 'string' || !/^[a-f0-9]{64}$/.test(value.credential))) throw new InvalidResponse();
+  return {...current, ...(delivery === 'token' ? {credential: value.credential} : {})};
+}
+
+/** Current identity never returns a credential, regardless of transport. */
+export function parseCurrentSessionResult(value) {
+  if (!exactFields(value, ['account', 'expiresAtMs'])) throw new InvalidResponse();
   const {account} = value;
   if (!exactFields(account, ['id', 'username', 'displayName', 'role'])
     || !['id', 'username', 'displayName'].every(key => typeof account[key] === 'string' && account[key].length > 0)
     || !['admin', 'member'].includes(account.role)) throw new InvalidResponse();
   const expiry = parseExpiryResult({expiresAtMs: value.expiresAtMs});
-  if (delivery === 'token' && !/^[a-f0-9]{64}$/.test(value.credential)) throw new InvalidResponse();
-  return {...expiry, account: {...account}, ...(delivery === 'token' ? {credential: value.credential} : {})};
+  return {...expiry, account: {...account}};
 }
 
 export function parseLogoutResult(value) {

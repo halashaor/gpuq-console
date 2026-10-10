@@ -1,4 +1,4 @@
-import {SESSION_ROUTES, parseLoginRequest, parseLoginResult, parseExpiryResult, parseLogoutResult} from '../contracts/session.mjs';
+import {SESSION_ROUTES, parseLoginRequest, parseLoginResult, parseCurrentSessionResult, parseExpiryResult, parseLogoutResult} from '../contracts/session.mjs';
 import {ApiError} from './errors.mjs';
 import {JsonHttpTransport} from './http-transport.mjs';
 
@@ -32,6 +32,29 @@ export class SessionClient {
     return this.#exclusive(async () => {
       const response = await this.transport.request(SESSION_ROUTES.refresh, {}, options);
       return parseExpiryResult(response?.result);
+    });
+  }
+
+  /** The caller supplies a saved CLI token; the browser supplies its own cookie.
+   * Local credentials are only a candidate, not evidence of a valid identity.
+   * Storage I/O stays with the platform adapter, outside this shared SDK.
+   */
+  async restore({credential} = {}, options) {
+    if (this.delivery === 'token' && (typeof credential !== 'string' || !/^[a-f0-9]{64}$/.test(credential))) {
+      throw new ApiError('INVALID_SESSION_CREDENTIAL');
+    }
+    if (this.delivery === 'cookie' && credential !== undefined) throw new ApiError('INVALID_SESSION_CREDENTIAL');
+    return this.#exclusive(async () => {
+      this.transport.session.close();
+      const revision = this.transport.session.snapshot().revision;
+      const probe = new JsonHttpTransport({baseUrl: this.transport.baseUrl, fetch: this.transport.fetch});
+      const headers = this.delivery === 'token' ? {Authorization: `Bearer ${credential}`} : {};
+      probe.session.replace({headers});
+      const response = await probe.request(SESSION_ROUTES.current, {}, options);
+      if (this.transport.session.snapshot().revision !== revision) throw new ApiError('SESSION_CHANGED');
+      const result = parseCurrentSessionResult(response?.result);
+      this.transport.session.replace({headers});
+      return result;
     });
   }
 

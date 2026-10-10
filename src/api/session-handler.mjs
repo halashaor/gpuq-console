@@ -33,6 +33,7 @@ export function createSessionHandler({login, lifecycle, authenticate, publicOrig
       }
       const actor = await authenticate(req);
       parseEmptyRequest(await readJson(req));
+      if (req.url === SESSION_ROUTES.current) return reply(res, 200, {result: await lifecycle.current(actor)});
       if (req.url === SESSION_ROUTES.refresh) return reply(res, 200, {result: await lifecycle.refresh(actor)});
       await lifecycle.logout(actor);
       const headers = req.headers.authorization === undefined ? {'Set-Cookie': cookie('', 0)} : {};

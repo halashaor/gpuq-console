@@ -12,6 +12,12 @@ export class SessionLifecycle {
     if (!result) throw new ApplicationError('UNAUTHENTICATED');
     return result;
   }
+
+  async current(actor) {
+    const result = await this.sessions.current(actor, this.clock());
+    if (!result) throw new ApplicationError('UNAUTHENTICATED');
+    return result;
+  }
   async logout(actor) {
     await this.sessions.revoke(actor);
   }
