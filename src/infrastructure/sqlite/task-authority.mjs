@@ -13,7 +13,8 @@ export class SqliteTaskAuthority {
   contextWithinTransaction(jobId) {
     const row = this.database.prepare(`SELECT j.account_id,j.request_id,j.payload_json,a.enabled,a.role
       FROM v2_training_requests j JOIN v2_training_queue q ON q.job_id=j.job_id
-      JOIN v2_accounts a ON a.id=j.account_id WHERE j.job_id=?`).get(jobId);
+      JOIN v2_accounts a ON a.id=j.account_id WHERE j.job_id=?
+      AND NOT EXISTS(SELECT 1 FROM v2_training_cancellations c WHERE c.job_id=j.job_id)`).get(jobId);
     if (!row || row.enabled !== 1) throw new ApplicationError('TASK_NOT_AUTHORIZED');
     let submission;
     try {submission = parseTrainingSubmission({...JSON.parse(row.payload_json), requestId: row.request_id});}

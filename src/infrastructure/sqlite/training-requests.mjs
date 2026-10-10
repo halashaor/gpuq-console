@@ -14,6 +14,9 @@ export function createTrainingRequestSchema(database) {
     submitter_username TEXT NOT NULL, submitter_name TEXT NOT NULL,
     payload_json TEXT NOT NULL, payload_hash TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state='RECORDED'), created_at_ms INTEGER NOT NULL
+  ); CREATE TABLE v2_training_cancellations (
+    job_id TEXT PRIMARY KEY REFERENCES v2_training_requests(job_id),
+    canceled_by TEXT NOT NULL REFERENCES v2_accounts(id), canceled_at_ms INTEGER NOT NULL
   )`));
 }
 

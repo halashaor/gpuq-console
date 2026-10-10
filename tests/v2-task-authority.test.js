@@ -77,3 +77,12 @@ test('real task directory observation reuses direct reads after logout and denie
   f.database.exec("DELETE FROM v2_machine_grants WHERE machine_id='node-1'");
   await assert.rejects(app.execute(f.jobId, 'node-1'), hasCode('FORBIDDEN'));
 });
+
+test('cancellation during data observation invalidates the in-flight task result', async t => {
+  const f = await fixture(t);
+  const app = new ResolveTaskData({authority: f.authority, sources: {async inspect() {
+    new SqliteTrainingQueue({database: f.database}).cancel(f.actor, f.jobId, f.now);
+    return {availability: 'available'};
+  }}});
+  await assert.rejects(app.execute(f.jobId, 'node-1'), hasCode('TASK_NOT_AUTHORIZED'));
+});

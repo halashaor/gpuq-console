@@ -79,6 +79,7 @@ export class SqliteComputeClaims {
     if (!Number.isSafeInteger(gpuCount) || gpuCount < 1 || gpuCount > 4096) throw new ApplicationError('INVALID_COMPUTE_CLAIM');
     const job = db.prepare('SELECT account_id FROM v2_training_requests WHERE job_id=?').get(jobId);
     if (!job || job.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+    if (db.prepare('SELECT 1 FROM v2_training_cancellations WHERE job_id=?').get(jobId)) throw new ApplicationError('TRAINING_CANCELED');
     const existing = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
     if (existing) {
       if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
