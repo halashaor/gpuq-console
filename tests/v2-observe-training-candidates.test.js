@@ -30,16 +30,26 @@ async function fixture(t) {
   }
   await new SessionClient({transport: new JsonHttpTransport({baseUrl: f.baseUrl}), delivery: 'token'}).login(loginRequest);
   const actor = {id: 'alice', sessionId: f.database.prepare('SELECT id FROM v2_sessions').get().id}, calls = [];
-  const projects = {async inspect(reference) {calls.push(reference.machineId); return {...observations.get(reference.machineId)};}};
+  const runtimeCalls = [];
+  const projects = {
+    async inspect(reference) {calls.push(reference.machineId); return {...observations.get(reference.machineId)};},
+    async verifyRuntime(reference) {
+      runtimeCalls.push(reference.machineId);
+      const {runtimeVerified, ...identity} = observations.get(reference.machineId);
+      return {...identity, runtimeIdentityVerified: true, runtime: {kind: 'oci', identity: 'sha256:' + 'd'.repeat(64)}};
+    },
+  };
   const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects});
-  return {...f, actor, observations, calls, projects, app};
+  return {...f, actor, observations, calls, runtimeCalls, projects, app};
 }
 
-test('only exact registered active instances survive observation, without claiming runtime/GPU readiness', async t => {
+test('only exact registered active instances and runtime references survive without claiming GPU readiness', async t => {
   const f = await fixture(t), writes = f.database.prepare('SELECT total_changes() n').get().n;
   const result = await f.app.execute(f.actor, request);
   assert.deepEqual(result.candidates.map(row => row.machineId), ['node-1','node-2']);
-  assert.ok(result.candidates.every(row => row.runtimeVerified === false && row.maxConfiguredGpus === 4));
+  assert.ok(result.candidates.every(row => row.runtimeIdentityVerified === true && row.maxConfiguredGpus === 4));
+  assert.ok(result.candidates.every(row => !Object.hasOwn(row, 'runtimeVerified')));
+  assert.deepEqual(f.runtimeCalls, ['node-1', 'node-2']);
   assert.equal(f.database.prepare('SELECT total_changes() n').get().n, writes);
 });
 
@@ -78,4 +88,49 @@ test('metadata without an instance binding makes no node request and is never ma
   const result = await f.app.execute(f.actor, request);
   assert.deepEqual(result.candidates, []); assert.deepEqual(f.calls, []);
   assert.ok(result.excluded.every(row => row.reason === 'instance-not-registered'));
+  assert.deepEqual(f.runtimeCalls, []);
+});
+
+test('a missing runtime excludes only that node and preserves another verified runtime', async t => {
+  const f = await fixture(t), original = f.projects.verifyRuntime;
+  f.projects.verifyRuntime = async reference => {
+    if (reference.machineId === 'node-1') throw new ApplicationError('PROJECT_SOURCE_UNAVAILABLE');
+    return original(reference);
+  };
+  const result = await f.app.execute(f.actor, request);
+  assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
+  assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'runtime-unavailable'}]);
+});
+
+test('instance replacement and malformed runtime claims cannot pass on earlier metadata', async t => {
+  const f = await fixture(t), original = f.projects.verifyRuntime;
+  f.projects.verifyRuntime = async reference => {
+    const result = await original(reference);
+    return reference.machineId === 'node-1' ? {...result, generation: 'e'.repeat(64)} : {...result, runtimeIdentityVerified: false};
+  };
+  const result = await f.app.execute(f.actor, request);
+  assert.deepEqual(result.candidates, []);
+  assert.deepEqual(result.excluded.map(row => row.reason), ['instance-changed', 'invalid-runtime-observation']);
+});
+
+test('runtime query rechecks registration and stops before querying a second node on drift', async t => {
+  const f = await fixture(t), original = f.projects.verifyRuntime;
+  f.projects.verifyRuntime = async reference => {
+    const result = await original(reference);
+    f.database.prepare('UPDATE v2_project_instances SET generation=? WHERE machine_id=?').run('e'.repeat(64), 'node-1');
+    return result;
+  };
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('TRAINING_CONTEXT_CHANGED'));
+  assert.deepEqual(f.calls, ['node-1']);
+  assert.deepEqual(f.runtimeCalls, ['node-1']);
+});
+
+test('account revocation during a failed runtime query aborts the whole observation', async t => {
+  const f = await fixture(t);
+  f.projects.verifyRuntime = async () => {
+    f.database.exec('UPDATE v2_accounts SET enabled=0');
+    throw new ApplicationError('PROJECT_SOURCE_UNAVAILABLE');
+  };
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('UNAUTHENTICATED'));
+  assert.deepEqual(f.calls, ['node-1']);
 });

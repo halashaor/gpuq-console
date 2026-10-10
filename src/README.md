@@ -39,7 +39,7 @@
 - `ExistingProjectReader` 与 `contracts/project-inspection.mjs`：inspect 读取项目元数据，verifyRuntime 检查已有环境引用；缺失基础环境不妨碍前者，但后者失败且不自动恢复。节点配置独立于请求，二者复用同一认证／HTTP／原生进程通道，不返回宿主路径。runtimeIdentityVerified 不代表训练准入或执行成功。`jsonProcess` 提供有界、无 shell、独立进程组监督的原生 JSON 通信。
 - `HttpProjectReader`／`assembleProjectInspection`：项目远端观察复用数据来源的 `NodeJsonTransport` 和节点认证，绑定账号／机器／版本。只完成隔离 HTTP 验证，实际节点部署与运行环境检查仍待接。
 - `ProjectClient`／`assembleSqliteProjectRegistration`：网页和 CLI 共用项目登记与存量查询。CLI `register-project`、`project-registration` 参数见 `--help`，重试保留同一逻辑 ID 和引用；查询不联系节点、不提供新的运行证明，亦不启动训练。
-- `ObserveTrainingCandidates`：将目录和已登记实例与远端观察逐一匹配，节点局部异常不阻断其他候选；权限／上下文变化使整次观察失效。仍不验证运行环境、空闲卡或占用额度，不创建租约。
+- `ObserveTrainingCandidates`：将目录和已登记实例与远端元数据、运行环境引用逐一匹配，每次 I/O 后检查目录上下文；节点局部异常不阻断其他候选，权限／上下文变化使整次观察失效。运行引用通过不等于用户代码可执行、空闲卡或占用额度足够，不创建租约。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

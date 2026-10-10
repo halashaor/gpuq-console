@@ -42,7 +42,13 @@ test('remote project observation and registration use actual node/Python metadat
   const candidates = await observer.execute(actor, {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}});
   assert.equal(candidates.candidates.length, 1);
   assert.equal(candidates.candidates[0].generation, observed.generation);
-  assert.equal(candidates.candidates[0].runtimeVerified, false);
+  assert.equal(candidates.candidates[0].runtimeIdentityVerified, true);
+  assert.equal(candidates.candidates[0].runtime.kind, 'base');
+  await rename(p.basePath, p.basePath + '-offline');
+  const unavailable = await observer.execute(actor, {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}});
+  assert.deepEqual(unavailable.candidates, []);
+  assert.deepEqual(unavailable.excluded, [{machineId: 'node-1', reason: 'runtime-unavailable'}]);
+  await assert.rejects(stat(p.basePath), {code: 'ENOENT'});
 });
 
 test('node rejects missing credentials, wrong machine and host path injection', async t => {
