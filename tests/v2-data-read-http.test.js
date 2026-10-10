@@ -8,6 +8,7 @@ import {assembleDataRead} from '../src/bootstrap/data-read.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
 import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport,ApiError} from '../src/client/http-transport.mjs';
+import {ClientSession} from '../src/client/session.mjs';
 import {DATA_READ_ROUTE} from '../src/contracts/data-read.mjs';
 
 const request={machineId:'node-1',source:{kind:'directory',sourceId:'images'}};
@@ -22,7 +23,7 @@ async function fixture(t){
   });
   const server=http.createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const baseUrl=`http://127.0.0.1:${server.address().port}`;
-  const client=headers=>new DataClient({transport:new JsonHttpTransport({baseUrl,headers})});
+  const client=headers=>new DataClient({transport:new JsonHttpTransport({baseUrl,session:new ClientSession({headers})})});
   t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));await rm(folder,{recursive:true,force:true});});
   return {folder,source,rows,errors,actors,baseUrl,client,deny:()=>granted=false,lookups:()=>lookups};
 }

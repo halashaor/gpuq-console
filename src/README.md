@@ -11,7 +11,7 @@
 - `application/resolve-data-read.mjs`：访问授权与读取观察的调用顺序，无 SQL、SSH、HTTP 或旧服务依赖。
 - `infrastructure/local-source-reader.mjs`：向目录查询接口取可信路径，只读检查真实目录，不准备缓存、不复制、不检查写入额度。
 - `api/data-read-handler.mjs`：认证、报文解析和错误映射；内部诊断留在服务端。
-- `client/`：网页和 Node 共用的 SDK／HTTP 实现，不重复业务规则，不自动回退或重试。
+- `client/`：网页和 Node 共用的 SDK／HTTP 实现；`ClientSession` 是凭据和请求生命周期的唯一所有者，切换身份后拒绝旧请求结果。不重复业务规则，不自动回退或重试。
 
 验证：`npm run test:v2` 和 `npm run test:v2:browser`。依赖方向也有测试，禁止新实现重新导入旧 `PortalService` 或演示服务。
 
