@@ -24,8 +24,20 @@ export function createTrainingCatalogSchema(database) {
 export class SqliteTrainingCatalog {
   constructor({database}) {this.database = database; this.sessions = new SqliteSessionReader({database});}
   candidates(actor, request, now) {
+    return readTransaction(this.database, () => this.#candidates(actor, request, now));
+  }
+  snapshot(actor, request, now) {
+    return readTransaction(this.database, () => {
+      const result = this.#candidates(actor, request, now);
+      const allowed = new Set(result.candidates.map(row => row.machineId));
+      const instances = this.database.prepare('SELECT * FROM v2_project_instances WHERE project_id=? ORDER BY machine_id')
+        .all(request.project.id).filter(row => allowed.has(row.machine_id)).map(row => ({machineId: row.machine_id,
+          project: row.project_slug, projectUUID: row.project_uuid, generation: row.generation}));
+      return {...result, instances};
+    });
+  }
+  #candidates(actor, request, now) {
     const db = this.database;
-    return readTransaction(db, () => {
       const session = this.sessions.findByActor(actor);
       requireActiveSession(session, now);
       const row = db.prepare('SELECT * FROM v2_projects WHERE id=?').get(request.project.id);
@@ -38,6 +50,5 @@ export class SqliteTrainingCatalog {
           cards: value.cards, granted: value.granted !== null, maxCards: value.max_cards, releaseRegistered: value.release_registered === 1}));
       const totalCards = db.prepare('SELECT total_cards FROM v2_compute_policies WHERE account_id=?').get(actor.id)?.total_cards ?? null;
       return trainingCandidates(actor, request, {session, project, releaseExists, machines, totalCards}, now);
-    });
   }
 }

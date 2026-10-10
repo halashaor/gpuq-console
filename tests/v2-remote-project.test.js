@@ -8,7 +8,8 @@ import {HttpProjectReader} from '../src/infrastructure/http-project-reader.mjs';
 import {NodeJsonTransport} from '../src/infrastructure/node-json-transport.mjs';
 import {PROJECT_INSPECTION_ROUTE} from '../src/contracts/project-inspection.mjs';
 import {RegisterProjectRelease} from '../src/application/register-project-release.mjs';
-import {createTrainingCatalogSchema} from '../src/infrastructure/sqlite/training-catalog.mjs';
+import {createTrainingCatalogSchema, SqliteTrainingCatalog} from '../src/infrastructure/sqlite/training-catalog.mjs';
+import {ObserveTrainingCandidates} from '../src/application/observe-training-candidates.mjs';
 import {createProjectRegistrationSchema, SqliteProjectRegistrations} from '../src/infrastructure/sqlite/project-registrations.mjs';
 import {SessionClient} from '../src/client/session-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
@@ -34,6 +35,12 @@ test('remote project observation and registration use actual node/Python metadat
   const registered = await app.execute(actor, {...p.request, projectId: 'logical'});
   assert.equal(registered.projectUUID, observed.projectUUID); assert.equal(registered.generation, observed.generation);
   assert.equal(registered.runtimeVerified, false);
+  f.database.exec("UPDATE v2_machines SET cards=8; UPDATE v2_machine_grants SET max_cards=2; INSERT INTO v2_compute_policies VALUES('alice',2,0)");
+  const observer = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects});
+  const candidates = await observer.execute(actor, {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}});
+  assert.equal(candidates.candidates.length, 1);
+  assert.equal(candidates.candidates[0].generation, observed.generation);
+  assert.equal(candidates.candidates[0].runtimeVerified, false);
 });
 
 test('node rejects missing credentials, wrong machine and host path injection', async t => {
