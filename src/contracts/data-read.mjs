@@ -1,7 +1,11 @@
 export const DATA_READ_ROUTE='/api/v2/data/read-location';
 
 export class InvalidRequest extends Error{
-  constructor(field){super('INVALID_REQUEST');this.field=field;}
+  constructor(field){super('INVALID_REQUEST');this.code='INVALID_REQUEST';this.field=field;}
+}
+
+export class InvalidResponse extends Error{
+  constructor(){super('INVALID_API_RESPONSE');this.code='INVALID_API_RESPONSE';}
 }
 
 const identifier=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -29,6 +33,22 @@ export function parseDataReadRequest(value){
     return {machineId,source:{kind:source.kind,datasetId:id(source.datasetId,'source.datasetId'),version:source.version}};
   }
   throw new InvalidRequest('source.kind');
+}
+
+export function parseDataReadResult(value){
+  try{
+    const reference=parseDataReadRequest({machineId:value.machineId,source:value.source});
+    if(value.availability==='available'){
+      fields(value,['machineId','source','availability','location'],'result');
+      fields(value.location,['containerPath','readOnly'],'location');
+      const {containerPath,readOnly}=value.location;
+      if(typeof containerPath!=='string'||!containerPath.startsWith('/')||containerPath.includes('\0')||readOnly!==true)throw new InvalidResponse();
+      return {...reference,availability:'available',location:{containerPath,readOnly}};
+    }
+    fields(value,['machineId','source','availability','reason'],'result');
+    if(!['missing','unavailable'].includes(value.availability)||!['not-found','not-readable','not-ready','not-directory'].includes(value.reason))throw new InvalidResponse();
+    return {...reference,availability:value.availability,reason:value.reason};
+  }catch{throw new InvalidResponse();}
 }
 
 /** @typedef {{kind:'directory',sourceId:string}|{kind:'warehouse'|'cache',datasetId:string,version:string}} DataSource */
