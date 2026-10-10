@@ -4,8 +4,9 @@ import {sessionFixture, loginRequest, readRequest} from './helpers/v2-session-fi
 import {SessionClient} from '../src/client/session-client.mjs';
 import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
+import {AccountClient} from '../src/client/account-client.mjs';
 
-const fixture = await sessionFixture();
+const fixture = await sessionFixture({admin: true});
 const browser = await chromium.launch({headless: true});
 try {
   const transport = new JsonHttpTransport({baseUrl: fixture.baseUrl});
@@ -52,6 +53,16 @@ try {
   });
   assert.deepEqual(restoredIdentity, browserLogin);
   assert.deepEqual(await reopened.evaluate(request => dataClient.resolveReadLocation(request), readRequest), nodeRead);
+  fixture.database.exec("INSERT INTO v2_accounts(id,username,display_name) VALUES('bob','bob','Bob')");
+  const browserChange = await reopened.evaluate(async () => {
+    const {AccountClient} = await import('/modules/client/account-client.mjs');
+    return new AccountClient({transport}).change({accountId: 'bob', revision: 0, kind: 'enabled', enabled: false});
+  });
+  assert.deepEqual(browserChange, {id: 'bob', role: 'member', enabled: false, revision: 1});
+  const nodeAccounts = new AccountClient({transport});
+  await assert.rejects(nodeAccounts.change({accountId: 'bob', revision: 0, kind: 'enabled', enabled: true}), error => error.code === 'ACCOUNT_CHANGED');
+  assert.deepEqual(await nodeAccounts.change({accountId: 'bob', revision: 1, kind: 'enabled', enabled: true}),
+    {id: 'bob', role: 'member', enabled: true, revision: 2});
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);
   const before = fixture.calls.length;
@@ -63,7 +74,7 @@ try {
   await nodeSession.refresh();
   await nodeSession.logout();
   assert.deepEqual(fixture.errors, []);
-  console.log('PASS real browser/Node shared login SDK: SQLite identity, protected read, cookie persistence, HttpOnly, scoped logout and no post-logout requests');
+  console.log('PASS real browser/Node shared SDK: login, restored identity, protected read, account changes/revision conflict, cookie persistence and scoped logout');
 } finally {
   await browser.close();
   await fixture.close();
