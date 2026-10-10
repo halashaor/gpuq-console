@@ -48,6 +48,7 @@
 - `trainingQuotaFit`：候选节点查询完成后，从同一读事务取得各机额度余额，与合法卡数求交集，返回 quotaFit。额度不足保留等待候选；未就绪／缺失余额不按无限额度处理。resourceFit 保留物理／配置观察，quotaFit 仍非派发许可，实际预留需使用原子 claim。
 - `SqliteTrainingDispatches`：同一写事务预留额度并记录每任务唯一 PREPARED 派发编号，失败一起回滚；通过原编号恢复，不自动换机。仅内部持久意图，不发送节点请求；额度原回执不能绕过当前授权来新建派发，PREPARED 也不是执行许可。任务原载荷仍由不可变输入记录持有。
 - `PrepareTrainingDispatch`：按任务 ID 读取统一原请求，观察候选，优先最大当前合法独占卡数，同卡数保持候选顺序；随后原子准备派发。没有适配或额度竞争返回 waiting，已存在／并发产生的派发恢复原编号，不重复观察或改投。waiting 是本次观察结果，不是持久队列终态；共享、抢占和实际节点执行仍待接。
+- `SqliteTrainingQueue`：同事务记录原请求与唯一排队序号；P4→P0，同级 FIFO，可按优先级／序号翻页。pending 为内部工作器查询，不带命令／环境；从派发记录排除已准备任务，不复制执行状态。队列跨重启和退出登录保留，但后台执行授权及工作器尚未接入，发现记录不代表允许执行。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

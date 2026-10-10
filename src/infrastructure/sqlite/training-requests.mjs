@@ -28,29 +28,32 @@ export class SqliteTrainingRequests {
   #authorize(actor, now) {requireActiveSession(this.sessions.findByActor(actor), now);}
 
   record(actor, input, now) {
+    return transaction(this.database, () => this.recordWithinTransaction(actor, input, now));
+  }
+
+  /** Caller owns the write transaction, e.g. atomic input plus queue insertion. */
+  recordWithinTransaction(actor, input, now) {
     const db = this.database;
-    return transaction(db, () => {
-      this.#authorize(actor, now);
-      let parsed;
-      try {parsed = parseTrainingSubmission(input);}
-      catch (cause) {throw new ApplicationError('INVALID_TRAINING_REQUEST', {cause});}
-      const request = normalizeTrainingRequest(parsed);
-      const payload = canonicalTrainingPayload(request);
-      const digest = createHash('sha256').update(payload).digest('hex');
-      const existing = db.prepare('SELECT * FROM v2_training_requests WHERE request_id=?').get(request.requestId);
-      if (existing) {
-        if (existing.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
-        if (existing.payload_hash !== digest) throw new ApplicationError('TRAINING_REQUEST_CONFLICT');
-        return receipt(existing);
-      }
-      const account = db.prepare('SELECT username,display_name FROM v2_accounts WHERE id=?').get(actor.id);
-      const jobId = randomUUID();
-      db.prepare(`INSERT INTO v2_training_requests(job_id,request_id,account_id,task_name,description,
-        submitter_username,submitter_name,payload_json,payload_hash,state,created_at_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,'RECORDED',?)`).run(jobId, request.requestId, actor.id, request.name, request.description,
-          account.username, account.display_name, payload, digest, now);
-      return receipt(db.prepare('SELECT * FROM v2_training_requests WHERE job_id=?').get(jobId));
-    });
+    this.#authorize(actor, now);
+    let parsed;
+    try {parsed = parseTrainingSubmission(input);}
+    catch (cause) {throw new ApplicationError('INVALID_TRAINING_REQUEST', {cause});}
+    const request = normalizeTrainingRequest(parsed);
+    const payload = canonicalTrainingPayload(request);
+    const digest = createHash('sha256').update(payload).digest('hex');
+    const existing = db.prepare('SELECT * FROM v2_training_requests WHERE request_id=?').get(request.requestId);
+    if (existing) {
+      if (existing.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+      if (existing.payload_hash !== digest) throw new ApplicationError('TRAINING_REQUEST_CONFLICT');
+      return receipt(existing);
+    }
+    const account = db.prepare('SELECT username,display_name FROM v2_accounts WHERE id=?').get(actor.id);
+    const jobId = randomUUID();
+    db.prepare(`INSERT INTO v2_training_requests(job_id,request_id,account_id,task_name,description,
+      submitter_username,submitter_name,payload_json,payload_hash,state,created_at_ms)
+      VALUES(?,?,?,?,?,?,?,?,?,'RECORDED',?)`).run(jobId, request.requestId, actor.id, request.name, request.description,
+        account.username, account.display_name, payload, digest, now);
+    return receipt(db.prepare('SELECT * FROM v2_training_requests WHERE job_id=?').get(jobId));
   }
 
   get(actor, requestId, now) {
