@@ -44,6 +44,7 @@ export async function sessionFixture({admin = false} = {}) {
     'client/compute-policy-client.mjs', 'contracts/compute-policy.mjs',
     'client/data-access-client.mjs', 'contracts/data-access.mjs',
     'client/directory-client.mjs', 'contracts/directory-registration.mjs',
+    'contracts/training-submission.mjs',
   ].map(name => ['/modules/' + name, new URL('../../src/' + name, import.meta.url)]));
   let sessionHandler, dataHandler, accountHandler, computeHandler, accessHandler, registrationHandler, now = Date.now();
   const errors = [], calls = [];

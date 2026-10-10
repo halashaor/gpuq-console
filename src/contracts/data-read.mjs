@@ -17,15 +17,19 @@ function id(value,path){
 /** Parse once at the API boundary. No host paths or caller-supplied identity. */
 export function parseDataReadRequest(value){
   fields(value,['machineId','source'],'request');
-  const machineId=id(value.machineId,'machineId'),source=value.source;
+  return {machineId:id(value.machineId,'machineId'),source:parseDataSource(value.source)};
+}
+
+/** A logical source may be selected before its execution machine is known. */
+export function parseDataSource(source){
   if(source?.kind==='directory'){
     fields(source,['kind','sourceId'],'source');
-    return {machineId,source:{kind:'directory',sourceId:id(source.sourceId,'source.sourceId')}};
+    return {kind:'directory',sourceId:id(source.sourceId,'source.sourceId')};
   }
   if(source?.kind==='warehouse'||source?.kind==='cache'){
     fields(source,['kind','datasetId','version'],'source');
     if(typeof source.version!=='string'||!version.test(source.version))throw new InvalidRequest('source.version');
-    return {machineId,source:{kind:source.kind,datasetId:id(source.datasetId,'source.datasetId'),version:source.version}};
+    return {kind:source.kind,datasetId:id(source.datasetId,'source.datasetId'),version:source.version};
   }
   throw new InvalidRequest('source.kind');
 }
