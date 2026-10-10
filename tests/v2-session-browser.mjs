@@ -6,6 +6,7 @@ import {DataClient} from '../src/client/data-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
 import {ComputePolicyClient} from '../src/client/compute-policy-client.mjs';
+import {DataAccessClient} from '../src/client/data-access-client.mjs';
 
 const fixture = await sessionFixture({admin: true});
 const browser = await chromium.launch({headless: true});
@@ -101,6 +102,20 @@ try {
   });
   assert.deepEqual(browserAccounts, await nodeAccounts.list());
   assert.equal(browserAccounts.accounts.find(account => account.id === created.id).displayName, '新同学');
+  fixture.database.exec("UPDATE v2_data_resources SET visibility='private',owner_id='alice'");
+  await nodePolicies.set({accountId: 'bob', revision: 2, totalCards: 1, limits: [{machineId: 'node-1', maxCards: 1}]});
+  await memberSession.login({username: 'bob', password: 'new-browser-password'});
+  await assert.rejects(memberData.resolveReadLocation(readRequest), error => error.code === 'FORBIDDEN');
+  const readers = await reopened.evaluate(async () => {
+    const {DataAccessClient} = await import('/modules/client/data-access-client.mjs');
+    return new DataAccessClient({transport}).setReaders({resourceId: 'images', revision: 0, readers: ['bob']});
+  });
+  const nodeAccess = new DataAccessClient({transport});
+  assert.deepEqual(readers, await nodeAccess.get({resourceId: 'images'}));
+  assert.equal((await memberData.resolveReadLocation(readRequest)).availability, 'available');
+  await nodeAccess.setReaders({resourceId: 'images', revision: 1, readers: []});
+  await assert.rejects(memberData.resolveReadLocation(readRequest), error => error.code === 'FORBIDDEN');
+  await memberSession.logout();
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);
   const before = fixture.calls.length;

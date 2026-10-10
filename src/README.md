@@ -18,6 +18,7 @@
 - `domain/account-policy.mjs` 与账号用例：管理员创建、查询、改角色和启停；事务内核对会话、目标修订和最后管理员规则。`create-account.mjs` 与 `reset-password.mjs` 在密码计算前授权、计算后事务重验，账号／凭据／失效修订原子提交。调用方保留新账号 UUID，创建丢回执后按原 ID 查询，不换号重试。`bootstrap/sqlite-account.mjs` 组装同一 HTTP／SDK 链路。
 - `application/list-accounts.mjs`：管理员分页查看用户名、姓名和当前角色／版本。网页／CLI 调用 `AccountClient.list`；独立 CLI 支持 `accounts --limit N --after ID`。分页不冻结跨请求快照，每页重新核对权限。
 - `domain/compute-policy.mjs`、`application/compute-policy.mjs`：机器访问与单机／跨机额度配置；`ComputePolicyClient` 共用 HTTP 契约。仓储原子替换现有机器授权行，策略版本防止覆盖并发修改；未知容量／旧上限不猜测。`compute-policy-schema.mjs` 显式建表／扩列，尚未用于生产迁移，调度准入执行额度仍待接。
+- `application/data-access.mjs`：管理员查询／替换私有来源的读者名单；`DataAccessClient` 使用同一 API。读者和 ACL 修订原子写入，不修改来源绑定、可见性、所有权或机器授权；共享来源不使用此接口假装取消共享。来源注册与管理页面仍待接。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
 - `bootstrap/sqlite-data-read.mjs`：节点本地 SQLite 集成入口；VPS 必须选择远端来源适配器，不能把远端路径拿到 VPS 上检查。
 - `api/data-read-handler.mjs`：认证、报文解析和错误映射；内部诊断留在服务端。

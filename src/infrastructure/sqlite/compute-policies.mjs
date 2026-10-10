@@ -1,4 +1,4 @@
-import {transaction} from './transaction.mjs';
+import {transaction, readTransaction} from './transaction.mjs';
 import {sessionColumns, sessionFrom} from './session-reader.mjs';
 import {requireComputePolicyAccess, requireComputePolicyChange} from '../../domain/compute-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
@@ -24,15 +24,11 @@ export class SqliteComputePolicies {
 
   get(actor, accountId, now) {
     // A read transaction keeps authorization and all policy rows in one snapshot.
-    const db = this.database;
-    db.exec('BEGIN');
-    try {
+    return readTransaction(this.database, () => {
       const facts = this.#facts(actor, accountId);
       requireComputePolicyAccess(actor, facts, now);
-      const result = this.#read(accountId, facts);
-      db.exec('COMMIT');
-      return result;
-    } catch (error) {db.exec('ROLLBACK'); throw error;}
+      return this.#read(accountId, facts);
+    });
   }
 
   set(actor, command, now) {

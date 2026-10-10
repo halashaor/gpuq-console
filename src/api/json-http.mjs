@@ -29,3 +29,18 @@ export function replyError(res, error, statusByCode, reportError) {
   if (!status || status >= 500) reportError(error);
   reply(res, status || 500, {error: {code: status ? error.code : 'INTERNAL_ERROR'}});
 }
+
+/** Explicit route maps share transport handling, never business decisions. */
+export function createJsonRoutes({routes, authenticate, statuses, reportError = console.error}) {
+  return async (req, res) => {
+    const route = routes.get(req.url);
+    if (!route) return reply(res, 404, {error: {code: 'NOT_FOUND'}});
+    if (req.method !== 'POST') return reply(res, 405, {error: {code: 'METHOD_NOT_ALLOWED'}});
+    if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') return reply(res, 415, {error: {code: 'JSON_REQUIRED'}});
+    try {
+      const actor = await authenticate(req);
+      const input = route.parse(await readJson(req));
+      reply(res, 200, {result: await route.useCase.execute(actor, input)});
+    } catch (error) {replyError(res, error, statuses, reportError);}
+  };
+}

@@ -11,6 +11,8 @@ import {assembleLocalSqliteDataRead} from '../../src/bootstrap/sqlite-data-read.
 import {assembleSqliteAccount} from '../../src/bootstrap/sqlite-account.mjs';
 import {assembleSqliteComputePolicy} from '../../src/bootstrap/sqlite-compute-policy.mjs';
 import {createComputePolicySchema} from '../../src/infrastructure/sqlite/compute-policy-schema.mjs';
+import {createDataAccessSchema} from '../../src/infrastructure/sqlite/data-access.mjs';
+import {assembleSqliteDataAccess} from '../../src/bootstrap/sqlite-data-access.mjs';
 
 export const readRequest = {machineId: 'node-1', source: {kind: 'directory', sourceId: 'images'}};
 export const loginRequest = {username: 'alice', password: 'fixture-password'};
@@ -29,6 +31,7 @@ export async function sessionFixture({admin = false} = {}) {
     INSERT INTO v2_machine_grants(account_id,machine_id) VALUES('alice','node-1');
     INSERT INTO v2_data_resources VALUES('images','directory','node-1','images',NULL,'shared',NULL)`);
   database.prepare('INSERT INTO v2_source_bindings VALUES(?,?,?,?,?)').run('images', 'node-1', 'directory', source, 1);
+  createDataAccessSchema(database);
   if (admin) database.exec("UPDATE v2_accounts SET role='admin' WHERE id='alice'");
   const password = await new Pbkdf2Passwords().hash(loginRequest.password);
   database.prepare('INSERT INTO v2_credentials(account_id,salt,hash,iterations) VALUES(?,?,?,?)')
@@ -38,8 +41,9 @@ export async function sessionFixture({admin = false} = {}) {
     'client/data-client.mjs', 'contracts/session.mjs', 'contracts/data-read.mjs', 'contracts/errors.mjs',
     'client/account-client.mjs', 'contracts/account.mjs',
     'client/compute-policy-client.mjs', 'contracts/compute-policy.mjs',
+    'client/data-access-client.mjs', 'contracts/data-access.mjs',
   ].map(name => ['/modules/' + name, new URL('../../src/' + name, import.meta.url)]));
-  let sessionHandler, dataHandler, accountHandler, computeHandler, now = Date.now();
+  let sessionHandler, dataHandler, accountHandler, computeHandler, accessHandler, now = Date.now();
   const errors = [], calls = [];
   const server = http.createServer(async (req, res) => {
     calls.push(req.url);
@@ -49,6 +53,8 @@ export async function sessionFixture({admin = false} = {}) {
     } else if (modules.has(req.url)) {
       res.writeHead(200, {'Content-Type': 'text/javascript'});
       res.end(await readFile(modules.get(req.url)));
+    } else if (req.url.startsWith('/api/v2/data-access/')) {
+      await accessHandler(req, res);
     } else if (req.url.startsWith('/api/v2/compute-policy/')) {
       await computeHandler(req, res);
     } else if (req.url.startsWith('/api/v2/accounts/')) {
@@ -65,6 +71,7 @@ export async function sessionFixture({admin = false} = {}) {
   sessionHandler = assembleSqliteSession(common);
   accountHandler = assembleSqliteAccount(common);
   computeHandler = assembleSqliteComputePolicy(common);
+  accessHandler = assembleSqliteDataAccess(common);
   dataHandler = assembleLocalSqliteDataRead({...common, machineId: 'node-1'});
   return {
     database, baseUrl, errors, calls, advance: ms => now += ms,
