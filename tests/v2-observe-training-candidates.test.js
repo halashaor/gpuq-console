@@ -8,8 +8,9 @@ import {createTrainingCatalogSchema, SqliteTrainingCatalog} from '../src/infrast
 import {createProjectRegistrationSchema} from '../src/infrastructure/sqlite/project-registrations.mjs';
 import {ObserveTrainingCandidates} from '../src/application/observe-training-candidates.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
+import {ResolveTrainingData} from '../src/application/resolve-training-data.mjs';
 
-const release = 'a'.repeat(64), request = {project: {id: 'logical', release}, machines: {kind: 'any'}, resources: {minGpus: 1}};
+const release = 'a'.repeat(64), request = {project: {id: 'logical', release}, machines: {kind: 'any'}, resources: {minGpus: 1}, dataSources: []};
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
   const f = await sessionFixture(); t.after(() => f.close());
@@ -39,8 +40,9 @@ async function fixture(t) {
       return {...identity, runtimeIdentityVerified: true, runtime: {kind: 'oci', identity: 'sha256:' + 'd'.repeat(64)}};
     },
   };
-  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects});
-  return {...f, actor, observations, calls, runtimeCalls, projects, app};
+  const data = new ResolveTrainingData({access: {async requireRead() {}}, sources: {async inspect() {return {availability: 'available'};}}});
+  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data});
+  return {...f, actor, observations, calls, runtimeCalls, projects, data, app};
 }
 
 test('only exact registered active instances and runtime references survive without claiming GPU readiness', async t => {
@@ -133,4 +135,39 @@ test('account revocation during a failed runtime query aborts the whole observat
   };
   await assert.rejects(f.app.execute(f.actor, request), hasCode('UNAUTHENTICATED'));
   assert.deepEqual(f.calls, ['node-1']);
+});
+
+test('data missing on one machine excludes only that machine without preparing a copy', async t => {
+  const f = await fixture(t);
+  f.data.read.sources.inspect = async reference => reference.machineId === 'node-1'
+    ? {availability: 'missing', reason: 'not-found'} : {availability: 'available'};
+  const result = await f.app.execute(f.actor, {...request, dataSources: [{kind: 'directory', sourceId: 'images'}]});
+  assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'data-unavailable'}]);
+  assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
+  assert.deepEqual(result.candidates[0].dataReads[0].location, {containerPath: '/datasets/images', readOnly: true});
+});
+
+test('final authorization rejects a data grant revoked while observing a later candidate', async t => {
+  const f = await fixture(t);
+  let revoked = false;
+  f.data.access.requireRead = async (_actor, reference) => {
+    if (revoked && reference.machineId === 'node-1') throw new ApplicationError('FORBIDDEN');
+  };
+  f.data.read.sources.inspect = async reference => {
+    if (reference.machineId === 'node-2') revoked = true;
+    return {availability: 'available'};
+  };
+  await assert.rejects(f.app.execute(f.actor, {...request, dataSources: [{kind: 'directory', sourceId: 'images'}]}), hasCode('FORBIDDEN'));
+});
+
+test('a node-local data grant is not required on every otherwise eligible machine', async t => {
+  const f = await fixture(t), reads = [];
+  f.data.access.requireRead = async (_actor, reference) => {
+    if (reference.machineId === 'node-1') throw new ApplicationError('FORBIDDEN');
+  };
+  f.data.read.sources.inspect = async reference => {reads.push(reference.machineId); return {availability: 'available'};};
+  const result = await f.app.execute(f.actor, {...request, dataSources: [{kind: 'directory', sourceId: 'images'}]});
+  assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
+  assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'data-not-authorized'}]);
+  assert.deepEqual(reads, ['node-2']);
 });

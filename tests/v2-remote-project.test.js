@@ -15,6 +15,10 @@ import {ObserveTrainingCandidates} from '../src/application/observe-training-can
 import {createProjectRegistrationSchema, SqliteProjectRegistrations} from '../src/infrastructure/sqlite/project-registrations.mjs';
 import {SessionClient} from '../src/client/session-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
+import {ResolveTrainingData} from '../src/application/resolve-training-data.mjs';
+import {DataReadAccess} from '../src/application/data-read-access.mjs';
+import {SqliteDataAuthority, SqliteSourceCatalog} from '../src/infrastructure/sqlite/data-read-repositories.mjs';
+import {LocalSourceReader} from '../src/infrastructure/local-source-reader.mjs';
 
 const credential = 'c'.repeat(64), context = {actor: {id: 'alice'}}, hasCode = code => error => error.code === code;
 async function serve(t, handler) {
@@ -38,14 +42,18 @@ test('remote project observation and registration use actual node/Python metadat
   assert.equal(registered.projectUUID, observed.projectUUID); assert.equal(registered.generation, observed.generation);
   assert.equal(registered.runtimeVerified, false);
   f.database.exec("UPDATE v2_machines SET cards=8; UPDATE v2_machine_grants SET max_cards=2; INSERT INTO v2_compute_policies VALUES('alice',2,0)");
-  const observer = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects});
-  const candidates = await observer.execute(actor, {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}});
+  const data = new ResolveTrainingData({access: new DataReadAccess({authority: new SqliteDataAuthority({database: f.database})}),
+    sources: new LocalSourceReader({machineId: 'node-1', catalog: new SqliteSourceCatalog({database: f.database})})});
+  const observer = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data});
+  const request = {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}, dataSources: [{kind: 'directory', sourceId: 'images'}]};
+  const candidates = await observer.execute(actor, request);
   assert.equal(candidates.candidates.length, 1);
   assert.equal(candidates.candidates[0].generation, observed.generation);
   assert.equal(candidates.candidates[0].runtimeIdentityVerified, true);
   assert.equal(candidates.candidates[0].runtime.kind, 'base');
+  assert.deepEqual(candidates.candidates[0].dataReads[0].location, {containerPath: '/datasets/images', readOnly: true});
   await rename(p.basePath, p.basePath + '-offline');
-  const unavailable = await observer.execute(actor, {project: {id: 'logical', release: p.release}, machines: {kind: 'any'}, resources: {minGpus: 1}});
+  const unavailable = await observer.execute(actor, request);
   assert.deepEqual(unavailable.candidates, []);
   assert.deepEqual(unavailable.excluded, [{machineId: 'node-1', reason: 'runtime-unavailable'}]);
   await assert.rejects(stat(p.basePath), {code: 'ENOENT'});

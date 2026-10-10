@@ -3,7 +3,7 @@ import {requireProjectObservation, requireProjectRuntimeObservation} from '../do
 
 /** Existing project/runtime references, not execution admission or GPU reservations. */
 export class ObserveTrainingCandidates {
-  constructor({catalog, projects, clock = Date.now}) {this.catalog = catalog; this.projects = projects; this.clock = clock;}
+  constructor({catalog, projects, data, clock = Date.now}) {this.catalog = catalog; this.projects = projects; this.data = data; this.clock = clock;}
   async execute(actor, request) {
     const snapshot = await this.catalog.snapshot(actor, request, this.clock());
     const unchanged = async () => {
@@ -50,8 +50,19 @@ export class ObserveTrainingCandidates {
         || runtime.environmentMode !== observation.environmentMode) {
         excluded.push({machineId: candidate.machineId, reason: 'instance-changed'}); continue;
       }
+      let reads;
+      try {
+        reads = await this.data.execute(actor, {machineId: candidate.machineId, sources: request.dataSources});
+      } catch (error) {
+        if (!['FORBIDDEN', 'TRAINING_DATA_UNAVAILABLE', 'SOURCE_UNAVAILABLE', 'SOURCE_NODE_UNAVAILABLE'].includes(error.code)) throw error;
+        excluded.push({machineId: candidate.machineId, reason: error.code === 'FORBIDDEN' ? 'data-not-authorized' : 'data-unavailable'});
+        continue;
+      } finally {await unchanged();}
       candidates.push({...candidate, ...instance, environmentMode: runtime.environmentMode,
-        runtimeIdentityVerified: true, runtime: {...runtime.runtime}});
+        runtimeIdentityVerified: true, runtime: {...runtime.runtime}, dataReads: reads});
+    }
+    for (const candidate of candidates) {
+      await this.data.requireAccess(actor, {machineId: candidate.machineId, sources: request.dataSources});
     }
     await unchanged();
     return {projectId: snapshot.projectId, projectRevision: snapshot.projectRevision, release: snapshot.release, candidates, excluded};
