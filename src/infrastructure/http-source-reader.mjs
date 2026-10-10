@@ -1,4 +1,4 @@
-import {SOURCE_INSPECTION_ROUTE, parseSourceInspection} from '../contracts/source-inspection.mjs';
+import {SOURCE_INSPECTION_ROUTE, SOURCE_ACCESS_ROUTE, parseSourceInspection, parseSourceAccessResult} from '../contracts/source-inspection.mjs';
 import {parseDataReadResult} from '../contracts/data-read.mjs';
 import {ApplicationError} from '../domain/errors.mjs';
 
@@ -20,13 +20,22 @@ export class HttpSourceReader {
   }
 
   async inspect(request, {actor} = {}) {
+    const result = await this.#query(SOURCE_INSPECTION_ROUTE, request, actor, parseDataReadResult);
+    return result.availability === 'available' ? {availability: 'available'} : {availability: result.availability, reason: result.reason};
+  }
+
+  async exportAccess(request, {actor} = {}) {
+    return this.#query(SOURCE_ACCESS_ROUTE, request, actor, parseSourceAccessResult);
+  }
+
+  async #query(route, request, actor, decode) {
     const input = parseSourceInspection({request, accountId: actor?.id});
     const node = this.#nodes.get(request.machineId);
     if (!node) throw new ApplicationError('SOURCE_NODE_UNAVAILABLE');
     const send = this.fetch;
     try {
       const signal = AbortSignal.timeout(this.timeoutMs);
-      const response = await send(new URL(SOURCE_INSPECTION_ROUTE, node.origin), {
+      const response = await send(new URL(route, node.origin), {
         method: 'POST', redirect: 'error', signal,
         headers: {'Content-Type': 'application/json', Authorization: `Bearer ${node.credential}`},
         body: JSON.stringify(input),
@@ -44,11 +53,11 @@ export class HttpSourceReader {
         chunks.push(chunk);
       }
       signal.throwIfAborted();
-      const result = parseDataReadResult(JSON.parse(Buffer.concat(chunks).toString('utf8')).result);
+      const result = decode(JSON.parse(Buffer.concat(chunks).toString('utf8')).result);
       if (result.machineId !== request.machineId || JSON.stringify(result.source) !== JSON.stringify(request.source)) {
         throw new Error('Node observation identity mismatch');
       }
-      return result.availability === 'available' ? {availability: 'available'} : {availability: result.availability, reason: result.reason};
+      return result;
     } catch (cause) {
       if (cause instanceof ApplicationError && cause.code === 'FORBIDDEN') throw cause;
       throw new ApplicationError('SOURCE_NODE_UNAVAILABLE', {cause});

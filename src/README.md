@@ -27,7 +27,8 @@
 - 节点可通过 `coordinatorVersions` 显式将某机器／类型／数据集／版本的授权交给 V2；默认仍保留旧 ACL。请求不能选择此模式，委托不跳过发布完整性检查或开放写操作。原有权限导入与正式入口切换尚待实现，不能直接全库启用。
 - `ManagedSourceReader.exportAccess` 与 `domain/data-access-import.mjs`：导出旧 ACL 的绑定快照，按显式账号映射核对全部副本并提出读者导入方案；冲突／缺失／现有撤权不自动处理。
 - `application/import-data-access.mjs` 和 `sqlite/data-access-imports.mjs`：提交前重新观察，事务内重建／比对方案，读者与回执原子写入；原请求恢复不重放历史写入。只是 V2 准备状态导入，不修改旧 ACL 或激活节点，正式切换尚待接。
-- `DataAccessImportClient` 与 `bootstrap/sqlite-data-access-import.mjs`：同一管理接口供网页／CLI 核对、确认和查询。独立 CLI 支持 `access-import-plan`、`access-import`、`access-import-status`（参数见 `--help`）；null 回执仅代表尚未观察到，保留原 UUID 查询，不换号重提。远端 ACL 导出通路仍待接。
+- `DataAccessImportClient` 与 `bootstrap/sqlite-data-access-import.mjs`：同一管理接口供网页／CLI 核对、确认和查询。独立 CLI 支持 `access-import-plan`、`access-import`、`access-import-status`（参数见 `--help`）；null 回执仅代表尚未观察到，保留原 UUID 查询，不换号重提。
+- `HttpSourceReader.exportAccess`：固定内部节点路由取得旧 ACL 快照，共用有界读取与独立协调器凭据，保留旧所有者检查。导入 API／浏览器／CLI 已通过隔离远端 HTTP 场景，真实服务器部署和正式切换仍待完成。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

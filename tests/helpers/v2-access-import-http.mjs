@@ -9,6 +9,8 @@ import {assembleSqliteSession} from '../../src/bootstrap/sqlite-session.mjs';
 import {JsonHttpTransport} from '../../src/client/http-transport.mjs';
 import {SessionClient} from '../../src/client/session-client.mjs';
 import {DataAccessImportClient} from '../../src/client/data-access-import-client.mjs';
+import {HttpSourceReader} from '../../src/infrastructure/http-source-reader.mjs';
+import {createSourceInspectionHandler} from '../../src/api/source-inspection-handler.mjs';
 
 export async function importHttpFixture(t, {mapped = true} = {}) {
   const f = await sessionFixture({admin: true}); t.after(() => f.close());
@@ -21,7 +23,12 @@ export async function importHttpFixture(t, {mapped = true} = {}) {
   const accountMapping = [{legacyId: 'alice', accountId: 'alice'}, ...(mapped ? [{legacyId: 'old-bob', accountId: 'bob'}] : [])];
   let inspections = 0, importHandler, sessionHandler;
   const calls = [];
-  const legacyAccess = {exportAccess(request) {inspections++; return publication.managed.exportAccess(request, {actor: {id: 'alice'}});}};
+  const credential = 'e'.repeat(64);
+  const node = http.createServer(createSourceInspectionHandler({machineId: 'node-1', credential, sources: publication.managed, reportError() {}}));
+  await new Promise(resolve => node.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {node.closeAllConnections(); await new Promise(resolve => node.close(resolve));});
+  const remote = new HttpSourceReader({nodes: [{machineId: 'node-1', origin: `http://127.0.0.1:${node.address().port}`, credential}]});
+  const legacyAccess = {exportAccess(request) {inspections++; return remote.exportAccess(request, {actor: {id: 'alice'}});}};
   const modules = new Map(['client/data-access-import-client.mjs', 'client/http-transport.mjs', 'client/session.mjs', 'client/errors.mjs',
     'contracts/data-access-import.mjs', 'contracts/managed-registration.mjs', 'contracts/data-read.mjs', 'contracts/errors.mjs']
     .map(name => ['/modules/' + name, new URL('../../src/' + name, import.meta.url)]));

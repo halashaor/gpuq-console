@@ -8,4 +8,7 @@ export class NodeSourceReader {
     const reader = request.source.kind === 'directory' ? this.directories : this.managed;
     return reader.inspect(request, context);
   }
+  async exportAccess(request, context) {
+    return this.managed.exportAccess(request, context);
+  }
 }
