@@ -52,3 +52,15 @@ test('V2 CLI is explicitly targeted and help does not need a server or credentia
   assert.match(help.stdout, /not the installed gpuctl/);
   assert.equal((await run(['current'])).code, 1);
 });
+
+test('real CLI accounts command returns the administrator-visible names and paging cursor', async t => {
+  const f = await sessionFixture({admin: true}); t.after(() => f.close());
+  const directory = await mkdtemp(join(tmpdir(), 'v2-cli-accounts-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const args = ['--url', f.baseUrl, '--credentials', join(directory, 'credentials.sqlite')];
+  const login = await run([...args, 'login', '--username', loginRequest.username, '--password-stdin'], loginRequest.password);
+  assert.equal(login.code, 0, login.stderr);
+  const response = await run([...args, 'accounts', '--limit', '1']);
+  assert.equal(response.code, 0, response.stderr);
+  assert.deepEqual(JSON.parse(response.stdout), {accounts: [{id: 'alice', username: 'alice', displayName: 'Alice', role: 'admin', enabled: true, revision: 0}], nextCursor: null});
+});

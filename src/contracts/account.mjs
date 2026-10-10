@@ -4,6 +4,31 @@ export const ACCOUNT_CHANGE_ROUTE = '/api/v2/accounts/change';
 export const ACCOUNT_GET_ROUTE = '/api/v2/accounts/get';
 export const PASSWORD_RESET_ROUTE = '/api/v2/accounts/reset-password';
 export const ACCOUNT_CREATE_ROUTE = '/api/v2/accounts/create';
+export const ACCOUNT_LIST_ROUTE = '/api/v2/accounts/list';
+
+export function parseAccountListQuery(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, 'after') || !Object.hasOwn(value, 'limit')) throw new InvalidRequest('request');
+  if (value.after !== null && (typeof value.after !== 'string' || !value.after || value.after.length > 128)) throw new InvalidRequest('after');
+  if (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 100) throw new InvalidRequest('limit');
+  return {after: value.after, limit: value.limit};
+}
+
+export function parseAccountListResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2
+    || !Array.isArray(value.accounts) || value.accounts.length > 100 || !Object.hasOwn(value, 'nextCursor')) throw new InvalidResponse();
+  const ids = new Set();
+  const accounts = value.accounts.map(account => {
+    if (!account || typeof account !== 'object' || Array.isArray(account) || Object.keys(account).length !== 6
+      || typeof account.username !== 'string' || !account.username || typeof account.displayName !== 'string' || !account.displayName) throw new InvalidResponse();
+    const {id, role, enabled, revision} = parseAccountResult({id: account.id, role: account.role, enabled: account.enabled, revision: account.revision});
+    if (ids.has(id)) throw new InvalidResponse();
+    ids.add(id);
+    return {id, role, enabled, revision, username: account.username, displayName: account.displayName};
+  });
+  if (value.nextCursor !== null && (!accounts.length || value.nextCursor !== accounts.at(-1).id)) throw new InvalidResponse();
+  return {accounts, nextCursor: value.nextCursor};
+}
 
 function newPassword(value) {
   if (typeof value !== 'string' || value.length < 8 || value.length > 128) throw new InvalidRequest('password');

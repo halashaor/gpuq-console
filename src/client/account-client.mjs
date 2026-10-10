@@ -1,8 +1,20 @@
-import {ACCOUNT_CHANGE_ROUTE, ACCOUNT_GET_ROUTE, ACCOUNT_CREATE_ROUTE, PASSWORD_RESET_ROUTE, parseAccountChange, parseAccountQuery, parseAccountCreate, parseAccountResult, parsePasswordReset} from '../contracts/account.mjs';
+import {
+  ACCOUNT_CHANGE_ROUTE, ACCOUNT_GET_ROUTE, ACCOUNT_CREATE_ROUTE, ACCOUNT_LIST_ROUTE, PASSWORD_RESET_ROUTE,
+  parseAccountChange, parseAccountQuery, parseAccountCreate, parseAccountResult, parsePasswordReset,
+  parseAccountListQuery, parseAccountListResult,
+} from '../contracts/account.mjs';
 import {InvalidResponse} from '../contracts/errors.mjs';
 
 export class AccountClient {
   constructor({transport}) {this.transport = transport;}
+
+  async list(request = {after: null, limit: 50}, options) {
+    const query = parseAccountListQuery(request);
+    const response = await this.transport.request(ACCOUNT_LIST_ROUTE, query, options);
+    const result = parseAccountListResult(response?.result);
+    if (result.accounts.length > query.limit || result.accounts.some(account => account.id === query.after)) throw new InvalidResponse();
+    return result;
+  }
 
   async create(request, options) {
     const command = parseAccountCreate(request);

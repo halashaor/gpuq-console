@@ -3,11 +3,13 @@ import {openClientCredentials} from '../infrastructure/open-client-credentials.m
 import {JsonHttpTransport} from '../client/http-transport.mjs';
 import {SessionClient} from '../client/session-client.mjs';
 import {DataClient} from '../client/data-client.mjs';
+import {AccountClient} from '../client/account-client.mjs';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
   --url ORIGIN --credentials FILE current
   --url ORIGIN --credentials FILE logout
+  --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE read --machine ID --kind directory --source ID
   --url ORIGIN --credentials FILE read --machine ID --kind warehouse|cache --dataset ID --version SHA256
 Credentials parent directory must already exist. Password is read from stdin, never an argument.
@@ -31,10 +33,11 @@ export async function runCli({argv, stdin, stdout}) {
     'password-stdin': {type: 'boolean'}, help: {type: 'boolean'},
     machine: {type: 'string'}, kind: {type: 'string'}, source: {type: 'string'},
     dataset: {type: 'string'}, version: {type: 'string'},
+    after: {type: 'string'}, limit: {type: 'string'},
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
-  if (positionals.length !== 1 || !['login', 'current', 'logout', 'read'].includes(command)
+  if (positionals.length !== 1 || !['login', 'current', 'logout', 'read', 'accounts'].includes(command)
     || !values.url || !values.credentials) throw new Error('Specify command, --url and --credentials; see --help');
   if (command === 'login' && (!values.username || !values['password-stdin'])) {
     throw new Error('Login requires --username and --password-stdin');
@@ -54,6 +57,7 @@ export async function runCli({argv, stdin, stdout}) {
       else {
         const expiry = await session.refresh();
         if (command === 'current') result = {...identity, ...expiry};
+        else if (command === 'accounts') result = await new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)});
         else {
           const source = values.kind === 'directory'
             ? {kind: values.kind, sourceId: values.source}

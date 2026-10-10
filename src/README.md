@@ -16,6 +16,7 @@
 - `infrastructure/open-client-credentials.mjs`：显式创建私有的客户端凭据库，原始令牌按 origin 保存；条件删除防止旧进程注销清掉新登录。不保存密码／角色，不连接服务端数据库。文件权限适配器目前只验证 Linux/POSIX。
 - `bootstrap/cli.mjs`：V2 独立命令外壳，调用同一 SDK；`node scripts/v2-client.mjs --help` 查看 login/current/read/logout 用法。必须指定候选 API 和凭据文件，不能据此认为线上已提供 V2 接口；已安装 gpuctl 不受影响。
 - `domain/account-policy.mjs` 与账号用例：管理员创建、查询、改角色和启停；事务内核对会话、目标修订和最后管理员规则。`create-account.mjs` 与 `reset-password.mjs` 在密码计算前授权、计算后事务重验，账号／凭据／失效修订原子提交。调用方保留新账号 UUID，创建丢回执后按原 ID 查询，不换号重试。`bootstrap/sqlite-account.mjs` 组装同一 HTTP／SDK 链路。
+- `application/list-accounts.mjs`：管理员分页查看用户名、姓名和当前角色／版本。网页／CLI 调用 `AccountClient.list`；独立 CLI 支持 `accounts --limit N --after ID`。分页不冻结跨请求快照，每页重新核对权限。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
 - `bootstrap/sqlite-data-read.mjs`：节点本地 SQLite 集成入口；VPS 必须选择远端来源适配器，不能把远端路径拿到 VPS 上检查。
 - `api/data-read-handler.mjs`：认证、报文解析和错误映射；内部诊断留在服务端。

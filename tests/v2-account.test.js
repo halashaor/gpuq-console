@@ -6,7 +6,7 @@ import {SessionClient} from '../src/client/session-client.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {SqliteAccounts} from '../src/infrastructure/sqlite/accounts.mjs';
-import {parseAccountChange, parsePasswordReset, parseAccountCreate} from '../src/contracts/account.mjs';
+import {parseAccountChange, parsePasswordReset, parseAccountCreate, parseAccountListQuery, parseAccountListResult} from '../src/contracts/account.mjs';
 import {CreateAccount} from '../src/application/create-account.mjs';
 import {ResetPassword} from '../src/application/reset-password.mjs';
 import {Pbkdf2Passwords} from '../src/infrastructure/passwords.mjs';
@@ -239,4 +239,56 @@ test('creation receipt loss keeps the original account identifier available for 
   assert.deepEqual(await f.admin.accounts.get({accountId: command.accountId}),
     {id: command.accountId, role: 'member', enabled: true, revision: 0});
   assert.equal(f.calls.filter(path => path === '/api/v2/accounts/create').length, 1);
+});
+
+test('account list returns names and bounded stable-ID pages without writing or exposing credentials', async t => {
+  const f = await fixture(t);
+  for (let n = 0; n < 103; n++) {
+    const id = 'member-' + String(n).padStart(3, '0');
+    f.database.prepare('INSERT INTO v2_accounts(id,username,display_name) VALUES(?,?,?)').run(id, id, '成员' + n);
+  }
+  const writes = f.database.prepare('SELECT total_changes() n').get().n;
+  let after = null;
+  const all = [];
+  do {
+    const page = await f.admin.accounts.list({after, limit: 20});
+    assert.ok(page.accounts.length <= 20);
+    for (const account of page.accounts) assert.deepEqual(Object.keys(account).sort(), ['displayName', 'enabled', 'id', 'revision', 'role', 'username']);
+    all.push(...page.accounts); after = page.nextCursor;
+  } while (after);
+  assert.equal(all.length, 105);
+  assert.equal(new Set(all.map(account => account.id)).size, 105);
+  assert.equal(all.find(account => account.id === 'member-003').displayName, '成员3');
+  assert.equal(f.database.prepare('SELECT total_changes() n').get().n, writes);
+  assert.deepEqual(await f.admin.accounts.list({after: 'zzzz', limit: 20}), {accounts: [], nextCursor: null});
+});
+
+test('list rejects ordinary members and rechecks administrator revocation between pages', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.member.accounts.list(), hasCode('FORBIDDEN'));
+  const first = await f.admin.accounts.list({after: null, limit: 1});
+  assert.ok(first.nextCursor);
+  f.database.exec("UPDATE v2_accounts SET auth_revision=auth_revision+1 WHERE id='alice'");
+  await assert.rejects(f.admin.accounts.list({after: first.nextCursor, limit: 1}), hasCode('UNAUTHENTICATED'));
+});
+
+test('keyset page stays after the requested ID when earlier rows are inserted', async t => {
+  const f = await fixture(t);
+  const first = await f.admin.accounts.list({after: null, limit: 1});
+  assert.equal(first.accounts[0].id, 'alice');
+  f.database.exec("INSERT INTO v2_accounts(id,username,display_name) VALUES('aaa','aaa','Earlier')");
+  const next = await f.admin.accounts.list({after: first.nextCursor, limit: 1});
+  assert.equal(next.accounts[0].id, 'bob');
+  assert.equal(next.nextCursor, null);
+});
+
+test('list contracts reject oversized pages, duplicate IDs, secret fields and mismatched cursors', () => {
+  assert.throws(() => parseAccountListQuery({after: null, limit: 101}), hasCode('INVALID_REQUEST'));
+  const row = {id: 'alice', username: 'alice', displayName: 'Alice', role: 'admin', enabled: true, revision: 0};
+  for (const response of [
+    {accounts: [row, row], nextCursor: null},
+    {accounts: [{...row, hash: 'secret'}], nextCursor: null},
+    {accounts: [row], nextCursor: 'other'},
+    {accounts: [], nextCursor: 'other'},
+  ]) assert.throws(() => parseAccountListResult(response), hasCode('INVALID_API_RESPONSE'));
 });

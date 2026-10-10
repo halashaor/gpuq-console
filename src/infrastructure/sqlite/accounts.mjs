@@ -31,6 +31,22 @@ export class SqliteAccounts {
     return facts.target;
   }
 
+  list(actor, {after, limit}, now) {
+    // Identity and this page are observed by one statement, without a write lock.
+    const rows = this.database.prepare(`SELECT ${sessionColumns},t.id target_id,t.username,t.display_name,
+      t.role target_role,t.enabled target_enabled,t.auth_revision target_revision
+      FROM v2_sessions s JOIN v2_accounts a ON a.id=s.account_id
+      LEFT JOIN (SELECT * FROM v2_accounts WHERE id>? ORDER BY id LIMIT ?) t ON 1
+      WHERE s.id=? AND a.id=? ORDER BY t.id`).all(after ?? '', limit + 1, actor.sessionId, actor.id);
+    requireAdministrator(actor, sessionFrom(rows[0]), now);
+    const observed = rows.filter(row => row.target_id !== null);
+    const accounts = observed.slice(0, limit).map(row => ({
+      id: row.target_id, username: row.username, displayName: row.display_name,
+      role: row.target_role, enabled: row.target_enabled === 1, revision: row.target_revision,
+    }));
+    return {accounts, nextCursor: observed.length > limit ? accounts.at(-1).id : null};
+  }
+
   authorizeCreate(actor, now) {
     requireAdministrator(actor, this.#facts(actor, null).session, now);
   }

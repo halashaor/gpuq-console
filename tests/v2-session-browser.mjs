@@ -82,6 +82,12 @@ try {
   assert.equal(newcomer.account.id, created.id);
   assert.equal(newcomer.account.displayName, '新同学');
   await memberSession.logout();
+  const browserAccounts = await reopened.evaluate(async () => {
+    const {AccountClient} = await import('/modules/client/account-client.mjs');
+    return new AccountClient({transport}).list();
+  });
+  assert.deepEqual(browserAccounts, await nodeAccounts.list());
+  assert.equal(browserAccounts.accounts.find(account => account.id === created.id).displayName, '新同学');
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);
   const before = fixture.calls.length;

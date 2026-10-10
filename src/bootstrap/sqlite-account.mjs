@@ -1,5 +1,6 @@
 import {ChangeAccount} from '../application/change-account.mjs';
 import {CreateAccount} from '../application/create-account.mjs';
+import {ListAccounts} from '../application/list-accounts.mjs';
 import {GetAccount} from '../application/get-account.mjs';
 import {ResetPassword} from '../application/reset-password.mjs';
 import {Pbkdf2Passwords} from '../infrastructure/passwords.mjs';
@@ -14,6 +15,7 @@ export function assembleSqliteAccount({database, publicOrigin, clock = Date.now,
   const accounts = new SqliteAccounts({database});
   return createAccountHandler({
     authenticate: createSessionAuthenticator({authenticateSession, publicOrigin}),
+    listAccounts: new ListAccounts({accounts, clock}),
     createAccount: new CreateAccount({accounts, passwords: new Pbkdf2Passwords(), clock}),
     resetPassword: new ResetPassword({accounts, passwords: new Pbkdf2Passwords(), clock}),
     changeAccount: new ChangeAccount({accounts, clock}), getAccount: new GetAccount({accounts, clock}), reportError,
