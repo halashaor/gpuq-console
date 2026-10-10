@@ -1,38 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {fileURLToPath} from 'node:url';
-import {mkdtemp, chmod, readdir, rm, stat, readFile} from 'node:fs/promises';
+import {stat, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {publishedFixture as fixture, python} from './helpers/v2-published-fixture.mjs';
 import {ManagedSourceReader} from '../src/infrastructure/managed-source-reader.mjs';
 import {assembleNodeSourceReader} from '../src/bootstrap/node-source-reader.mjs';
 import {HttpSourceReader} from '../src/infrastructure/http-source-reader.mjs';
 import {createSourceInspectionHandler} from '../src/api/source-inspection-handler.mjs';
 import {parseSourceInspection} from '../src/contracts/source-inspection.mjs';
 
-const run = promisify(execFile), python = process.env.V2_PYTHON || 'python3';
 const context = {actor: {id: 'alice'}}, hasCode = code => error => error.code === code;
-async function writable(path) {
-  await chmod(path, 0o700);
-  for (const entry of await readdir(path, {withFileTypes: true})) {
-    const child = join(path, entry.name);
-    if (entry.isDirectory()) await writable(child);
-    else await chmod(child, 0o600);
-  }
-}
-async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'v2-published-'));
-  t.after(async () => {await writable(directory); await rm(directory, {recursive: true, force: true});});
-  const {stdout} = await run(python, ['-B', fileURLToPath(new URL('./helpers/v2-published-fixture.py', import.meta.url)), directory]);
-  const {version} = JSON.parse(stdout);
-  const roots = ['cache', 'warehouse'].map(kind => ({kind, root: join(directory, kind)}));
-  const managed = new ManagedSourceReader({machineId: 'node-1', roots, python});
-  const request = kind => ({machineId: 'node-1', source: {kind, datasetId: 'images', version}});
-  return {directory, version, roots, managed, request};
-}
 
 test('Node adapter invokes real Python metadata verification for cache and warehouse without changing payload', async t => {
   const f = await fixture(t);

@@ -22,6 +22,12 @@ export class SqliteSessionReader {
   constructor({database}) {
     this.find = database.prepare(`SELECT ${sessionColumns} FROM v2_sessions s
       JOIN v2_accounts a ON a.id=s.account_id WHERE s.token_hash=?`);
+    this.byActor = database.prepare(`SELECT ${sessionColumns} FROM v2_sessions s
+      JOIN v2_accounts a ON a.id=s.account_id WHERE s.id=? AND a.id=?`);
+  }
+
+  findByActor(actor) {
+    return sessionFrom(this.byActor.get(actor.sessionId, actor.id));
   }
 
   findByCredential(credential) {

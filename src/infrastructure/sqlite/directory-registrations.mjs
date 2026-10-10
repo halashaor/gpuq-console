@@ -1,16 +1,14 @@
 import {randomUUID} from 'node:crypto';
 import {transaction} from './transaction.mjs';
-import {sessionColumns, sessionFrom} from './session-reader.mjs';
+import {SqliteSessionReader} from './session-reader.mjs';
 import {requireAdministrator} from '../../domain/account-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
 
 export class SqliteDirectoryRegistrations {
-  constructor({database}) {this.database = database;}
+  constructor({database}) {this.database = database; this.sessions = new SqliteSessionReader({database});}
 
   authorize(actor, now) {
-    const row = this.database.prepare(`SELECT ${sessionColumns} FROM v2_sessions s
-      JOIN v2_accounts a ON a.id=s.account_id WHERE s.id=? AND a.id=?`).get(actor.sessionId, actor.id);
-    requireAdministrator(actor, sessionFrom(row), now);
+    requireAdministrator(actor, this.sessions.findByActor(actor), now);
   }
 
   register(actor, {machineId, sourceId}, source, now) {
