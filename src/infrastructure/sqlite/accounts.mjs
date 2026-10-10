@@ -1,6 +1,7 @@
 import {transaction} from './transaction.mjs';
 import {sessionColumns, sessionFrom} from './session-reader.mjs';
-import {requireAccountChange, requireAccountRead, requirePasswordReset} from '../../domain/account-policy.mjs';
+import {requireAccountChange, requireAccountRead, requirePasswordReset, requireAdministrator} from '../../domain/account-policy.mjs';
+import {ApplicationError} from '../../domain/errors.mjs';
 
 function accountFrom(row) {
   return row ? {id: row.id, role: row.role, enabled: row.enabled === 1, revision: row.auth_revision} : null;
@@ -28,6 +29,25 @@ export class SqliteAccounts {
     const facts = this.#facts(actor, accountId);
     requireAccountRead(actor, facts, now);
     return facts.target;
+  }
+
+  authorizeCreate(actor, now) {
+    requireAdministrator(actor, this.#facts(actor, null).session, now);
+  }
+
+  create(actor, command, now) {
+    const db = this.database;
+    return transaction(db, () => {
+      this.authorizeCreate(actor, now);
+      if (db.prepare('SELECT 1 FROM v2_accounts WHERE id=?').get(command.accountId)) throw new ApplicationError('ACCOUNT_EXISTS');
+      if (db.prepare('SELECT 1 FROM v2_accounts WHERE username=?').get(command.username)) throw new ApplicationError('USERNAME_EXISTS');
+      db.prepare('INSERT INTO v2_accounts(id,username,display_name,role) VALUES(?,?,?,?)')
+        .run(command.accountId, command.username, command.displayName, command.role);
+      const {salt, hash, iterations} = command.password;
+      db.prepare('INSERT INTO v2_credentials(account_id,salt,hash,iterations) VALUES(?,?,?,?)')
+        .run(command.accountId, salt, hash, iterations);
+      return accountFrom(db.prepare('SELECT * FROM v2_accounts WHERE id=?').get(command.accountId));
+    });
   }
 
   authorizePasswordReset(actor, command, now) {

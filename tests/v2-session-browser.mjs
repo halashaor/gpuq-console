@@ -71,6 +71,17 @@ try {
   const memberSession = new SessionClient({transport: new JsonHttpTransport({baseUrl: fixture.baseUrl}), delivery: 'token'});
   assert.equal((await memberSession.login({username: 'bob', password: 'new-browser-password'})).account.id, 'bob');
   await memberSession.logout();
+  const created = await reopened.evaluate(async () => {
+    const {AccountClient} = await import('/modules/client/account-client.mjs');
+    return new AccountClient({transport}).create({accountId: crypto.randomUUID(), username: 'new-browser-member',
+      displayName: '新同学', role: 'member', password: 'created-browser-password'});
+  });
+  assert.equal(created.role, 'member');
+  assert.equal(created.revision, 0);
+  const newcomer = await memberSession.login({username: 'new-browser-member', password: 'created-browser-password'});
+  assert.equal(newcomer.account.id, created.id);
+  assert.equal(newcomer.account.displayName, '新同学');
+  await memberSession.logout();
   assert.deepEqual(await reopened.evaluate(() => sessionClient.logout()), {revoked: true});
   assert.deepEqual(await restored.cookies(), []);
   const before = fixture.calls.length;

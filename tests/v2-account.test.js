@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {sessionFixture, loginRequest} from './helpers/v2-session-fixture.mjs';
 import {SessionClient} from '../src/client/session-client.mjs';
 import {AccountClient} from '../src/client/account-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {SqliteAccounts} from '../src/infrastructure/sqlite/accounts.mjs';
-import {parseAccountChange, parsePasswordReset} from '../src/contracts/account.mjs';
+import {parseAccountChange, parsePasswordReset, parseAccountCreate} from '../src/contracts/account.mjs';
+import {CreateAccount} from '../src/application/create-account.mjs';
 import {ResetPassword} from '../src/application/reset-password.mjs';
 import {Pbkdf2Passwords} from '../src/infrastructure/passwords.mjs';
 
@@ -170,4 +172,71 @@ test('administrator self-reset is permitted but also invalidates the issuing ses
   await assert.rejects(f.admin.session.refresh(), hasCode('UNAUTHENTICATED'));
   await f.admin.session.login({username: 'alice', password: 'new-admin-password'});
   assert.equal((await f.admin.accounts.get({accountId: 'alice'})).role, 'admin');
+});
+
+const newAccount = () => ({accountId: randomUUID(), username: '新成员', displayName: '新同学', role: 'member', password: 'new-member-password'});
+
+test('created account can log in with its display name but has no implicit machine/data grants', async t => {
+  const f = await fixture(t), command = newAccount();
+  const result = await f.admin.accounts.create(command);
+  assert.deepEqual(result, {id: command.accountId, role: 'member', enabled: true, revision: 0});
+  const transport = new JsonHttpTransport({baseUrl: f.baseUrl});
+  const session = new SessionClient({transport, delivery: 'token'});
+  assert.equal((await session.login({username: command.username, password: command.password})).account.displayName, command.displayName);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_machine_grants WHERE account_id=?').get(command.accountId).n, 0);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_data_readers WHERE account_id=?').get(command.accountId).n, 0);
+  assert.deepEqual(await f.admin.accounts.get({accountId: command.accountId}), result);
+  await assert.rejects(f.admin.accounts.create(command), hasCode('ACCOUNT_EXISTS'));
+});
+
+test('concurrent duplicate usernames create one complete account, never a partial credential', async t => {
+  const f = await fixture(t), first = newAccount(), second = {...first, accountId: randomUUID()};
+  const results = await Promise.allSettled([f.admin.accounts.create(first), f.admin.accounts.create(second)]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'USERNAME_EXISTS');
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_accounts WHERE username=?').get(first.username).n, 1);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_credentials WHERE account_id IN (?,?)').get(first.accountId, second.accountId).n, 1);
+});
+
+test('creation denies members before hashing and rechecks administrator after password work', async t => {
+  const f = await fixture(t), accounts = new SqliteAccounts({database: f.database});
+  const actor = id => ({id, sessionId: f.database.prepare('SELECT id FROM v2_sessions WHERE account_id=?').get(id).id});
+  let calls = 0;
+  const password = await new Pbkdf2Passwords().hash('new-member-password');
+  const create = new CreateAccount({accounts, passwords: {hash: async () => {
+    calls++; f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'"); return password;
+  }}});
+  const command = newAccount();
+  await assert.rejects(create.execute(actor('bob'), command), hasCode('FORBIDDEN'));
+  assert.equal(calls, 0);
+  await assert.rejects(create.execute(actor('alice'), command), hasCode('UNAUTHENTICATED'));
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_accounts WHERE id=?').get(command.accountId).n, 0);
+});
+
+test('credential insertion failure rolls back the new account row', async t => {
+  const f = await fixture(t), command = newAccount();
+  f.database.exec("CREATE TRIGGER reject_credential BEFORE INSERT ON v2_credentials BEGIN SELECT RAISE(ABORT,'injected failure'); END");
+  await assert.rejects(f.admin.accounts.create(command), hasCode('INTERNAL_ERROR'));
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_accounts WHERE id=?').get(command.accountId).n, 0);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_credentials WHERE account_id=?').get(command.accountId).n, 0);
+});
+
+test('creation contract retains current username/display-name rules and requires a stable new UUID', () => {
+  const command = newAccount();
+  assert.equal(parseAccountCreate({...command, username: ' 新成员 '}).username, '新成员');
+  for (const invalid of [{...command, accountId: 'alice'}, {...command, username: 'admin'}, {...command, username: 'UPPER'},
+    {...command, displayName: 'x'.repeat(33)}, {...command, displayName: 'a\u0000b'}, {...command, actor: 'alice'}]) {
+    assert.throws(() => parseAccountCreate(invalid), hasCode('INVALID_REQUEST'));
+  }
+});
+
+test('creation receipt loss keeps the original account identifier available for observation without retry', async t => {
+  const f = await fixture(t), command = newAccount();
+  const transport = new JsonHttpTransport({baseUrl: f.baseUrl, session: f.admin.transport.session, fetch: async (url, options) => {
+    await fetch(url, options); throw new Error('lost creation receipt');
+  }});
+  await assert.rejects(new AccountClient({transport}).create(command), hasCode('NETWORK_UNAVAILABLE'));
+  assert.deepEqual(await f.admin.accounts.get({accountId: command.accountId}),
+    {id: command.accountId, role: 'member', enabled: true, revision: 0});
+  assert.equal(f.calls.filter(path => path === '/api/v2/accounts/create').length, 1);
 });

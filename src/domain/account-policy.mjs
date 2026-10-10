@@ -2,12 +2,16 @@ import {ApplicationError} from './errors.mjs';
 import {requireActiveSession} from './session-policy.mjs';
 
 /** All facts must come from the same write transaction. */
-export function requireAccountRead(actor, facts, now) {
-  requireActiveSession(facts.session, now);
-  if (facts.session.accountId !== actor.id || facts.session.sessionId !== actor.sessionId) {
+export function requireAdministrator(actor, session, now) {
+  requireActiveSession(session, now);
+  if (session.accountId !== actor.id || session.sessionId !== actor.sessionId) {
     throw new ApplicationError('UNAUTHENTICATED');
   }
-  if (facts.session.accountRole !== 'admin') throw new ApplicationError('FORBIDDEN');
+  if (session.accountRole !== 'admin') throw new ApplicationError('FORBIDDEN');
+}
+
+export function requireAccountRead(actor, facts, now) {
+  requireAdministrator(actor, facts.session, now);
   if (!facts.target) throw new ApplicationError('ACCOUNT_NOT_FOUND');
 }
 
