@@ -55,6 +55,7 @@
 - `PrepareTaskDispatch`：任务身份下复用相同候选选择／竞争恢复流程；任务派发仓储与会话派发共用原子额度／意图写入。写入时核对固定任务、当前账号、机器范围及卡数边界，不使用登录 token；仍只是 PREPARED，发送前必须重新确认项目、数据与节点执行条件。
 - `AdvanceTrainingQueue`／`assembleTrainingQueue`：单次推进一页优先级队列，等待／已知任务级拒绝不阻断后续条目；统计未就绪或未知程序错误停止本次调用。返回逐任务观察结果及游标，不自动定时、重试或标记永久失败。组装层显式接收数据库和节点适配器，不迁移 schema 或启动服务；尚无节点发送。
 - 派发 `beginSend`／`recordSendOutcome`：写入 SENDING 后仅一个调用者获得内部发送令牌；后续只能查原尝试，UNKNOWN 不重发、不释放额度，匹配迟到回执可转 ACCEPTED。普通回执不含发送令牌；ACCEPTED 仅表示节点接收，不表示训练运行或完成。尚未接网络发送、重启后节点核对与终态释放；扩展状态 schema 需显式升级。
+- `ReconcileTrainingDispatch`：内部按原机器／派发 ID 查询接收记录，严格匹配任务、账号、机器、卡数及原请求摘要后确认；重启后不需要原发送令牌。空查询或离线不证明发送失败，不重发或释放额度。节点查询端口尚未接真实登记服务，当前不提供公开状态伪造入口。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

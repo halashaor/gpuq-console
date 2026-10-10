@@ -22,6 +22,10 @@ const receipt = row => ({dispatchId: row.dispatch_id, jobId: row.job_id, machine
   gpuCount: row.gpu_count, state: row.state, createdAtMs: row.created_at_ms,
   sendStartedAtMs: row.send_started_at_ms, nodeJobId: row.node_job_id});
 
+function requireNodeJobId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) throw new ApplicationError('INVALID_DISPATCH_OUTCOME');
+}
+
 /** Durable dispatch intent only: no network, GPU lease, worker or user code. */
 export class SqliteTrainingDispatches {
   constructor({database}) {
@@ -98,20 +102,49 @@ export class SqliteTrainingDispatches {
 
   /** Internal evidence write, permitted after account revocation; never authorizes another send. */
   recordSendOutcome({dispatchId, senderToken, nodeJobId}) {
-    if (nodeJobId !== null && (typeof nodeJobId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(nodeJobId))) {
-      throw new ApplicationError('INVALID_DISPATCH_OUTCOME');
-    }
+    if (nodeJobId !== null) requireNodeJobId(nodeJobId);
     return transaction(this.database, () => {
       const row = this.database.prepare(`SELECT d.*,c.machine_id,c.gpu_count FROM v2_training_dispatches d
         JOIN v2_compute_claims c ON c.job_id=d.job_id WHERE d.dispatch_id=?`).get(dispatchId);
       if (!row || !row.sender_token || row.sender_token !== senderToken) throw new ApplicationError('DISPATCH_SEND_CONFLICT');
+      return this.#recordOutcome(row, nodeJobId);
+    });
+  }
+
+  #recordOutcome(row, nodeJobId) {
       if (row.state === 'ACCEPTED') {
         if (nodeJobId !== null && nodeJobId !== row.node_job_id) throw new ApplicationError('DISPATCH_OUTCOME_CONFLICT');
         return receipt(row);
       }
       this.database.prepare('UPDATE v2_training_dispatches SET state=?,node_job_id=? WHERE dispatch_id=?')
-        .run(nodeJobId === null ? 'UNKNOWN' : 'ACCEPTED', nodeJobId, dispatchId);
+        .run(nodeJobId === null ? 'UNKNOWN' : 'ACCEPTED', nodeJobId, row.dispatch_id);
       return receipt(this.#find(row.job_id));
+  }
+
+  #delivery(dispatchId) {
+    return this.database.prepare(`SELECT d.*,c.machine_id,c.gpu_count,j.payload_hash,j.account_id
+      FROM v2_training_dispatches d JOIN v2_compute_claims c ON c.job_id=d.job_id
+      JOIN v2_training_requests j ON j.job_id=d.job_id WHERE d.dispatch_id=?`).get(dispatchId);
+  }
+
+  /** Internal recovery read; no login requirement and no command/env/sender-token exposure. */
+  delivery(dispatchId) {
+    return readTransaction(this.database, () => {
+      const row = this.#delivery(dispatchId);
+      return row ? {...receipt(row), accountId: row.account_id, requestHash: row.payload_hash} : null;
+    });
+  }
+
+  /** Trusted node-query evidence, not a user-supplied status or permission to send. */
+  confirmAcceptance(observed) {
+    requireNodeJobId(observed?.nodeJobId);
+    return transaction(this.database, () => {
+      const row = this.#delivery(observed.dispatchId);
+      if (!row || row.job_id !== observed.jobId || row.machine_id !== observed.machineId
+        || row.gpu_count !== observed.gpuCount || row.account_id !== observed.accountId
+        || row.payload_hash !== observed.requestHash) throw new ApplicationError('DISPATCH_OBSERVATION_MISMATCH');
+      if (row.state === 'PREPARED') throw new ApplicationError('DISPATCH_NOT_SENT');
+      return this.#recordOutcome(row, observed.nodeJobId);
     });
   }
 

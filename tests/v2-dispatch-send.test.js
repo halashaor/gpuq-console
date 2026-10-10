@@ -3,20 +3,10 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {computeFixture} from './helpers/v2-compute-fixture.mjs';
-import {trainingSubmission} from './helpers/v2-training-submission.mjs';
-import {createTrainingQueueSchema, SqliteTrainingQueue} from '../src/infrastructure/sqlite/training-queue.mjs';
-import {createTrainingDispatchSchema, SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
+import {dispatchFixture as fixture} from './helpers/v2-dispatch-fixture.mjs';
+import {SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
 
 const hasCode = code => error => error.code === code;
-async function fixture(t) {
-  const f = await computeFixture(t); f.ready(); createTrainingQueueSchema(f.database); createTrainingDispatchSchema(f.database);
-  const queue = new SqliteTrainingQueue({database: f.database});
-  const jobId = queue.enqueue(f.actor, trainingSubmission(), f.now).request.jobId;
-  const dispatches = new SqliteTrainingDispatches({database: f.database});
-  const prepared = dispatches.prepareForTask(jobId, {machineId: 'node-1', gpuCount: 2}, f.now);
-  return {...f, queue, jobId, dispatches, prepared};
-}
 
 test('one persisted send permit is granted and ordinary receipts do not reveal its token', async t => {
   const f = await fixture(t), permit = f.dispatches.beginSend(f.jobId, f.now);
