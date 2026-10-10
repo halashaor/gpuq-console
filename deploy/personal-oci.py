@@ -156,7 +156,11 @@ def translate_control(arguments, sources=None):
 
 
 class PersonalOCI:
-    def __init__(self, config, user):
+    initialize = True
+
+    def __init__(self, config, user, *, initialize=True):
+        need(type(initialize) is bool, 'Invalid OCI initialization mode')
+        self.initialize = initialize
         self.config, self.user = config, user
         # Admission precedes any owner directory creation. A global OCI flag
         # must not let a legacy/non-cohort owner fall back to quota-free OCI.
@@ -167,17 +171,20 @@ class PersonalOCI:
         self.s.check_platform_root(self.root)
         need(isinstance(user, str) and OWNER.fullmatch(user), 'Invalid OCI owner')
         self.owner = hashlib.sha256(user.encode()).hexdigest()
-        parent = self.s.private_dir(self.root/'oci', create=True)
-        self.folder = self.s.private_dir(parent/self.owner, create=True)
-        self.q.ensure(config, user, self.folder)
+        parent = self.s.private_dir(self.root/'oci', create=initialize)
+        self.folder = self.s.private_dir(parent/self.owner, create=initialize)
+        if initialize:
+            self.q.ensure(config, user, self.folder)
         for name in ('graph', 'run', 'tmp', 'home', 'projects'):
-            self.s.private_dir(self.folder/name, create=True)
+            self.s.private_dir(self.folder/name, create=initialize)
         for name in ('home/.config', 'home/.config/containers', 'home/.config/containers/registries.conf.d', 'home/containers'):
-            self.s.private_dir(self.folder/name, create=True)
-        self.runtime_tmp = self.runtime_temporary()
+            self.s.private_dir(self.folder/name, create=initialize)
+        if initialize:
+            self.runtime_tmp = self.runtime_temporary()
+        temporary = self.runtime_tmp if initialize else self.folder/'tmp'
         self.env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(self.folder/'home'),
                     'XDG_CONFIG_HOME': str(self.folder/'home'), 'XDG_DATA_HOME': str(self.folder/'home'),
-                    'XDG_RUNTIME_DIR': '/run/user/'+str(os.getuid()), 'TMPDIR': str(self.runtime_tmp),
+                    'XDG_RUNTIME_DIR': '/run/user/'+str(os.getuid()), 'TMPDIR': str(temporary),
                     'REGISTRY_AUTH_FILE': str(self.folder/'anonymous-registry-auth.json'), 'LANG': 'C.UTF-8',
                     'CONTAINERS_REGISTRIES_CONF': str(self.folder/'anonymous-registries.conf'),
                     'CONTAINERS_CONF': str(ENGINE)}
@@ -189,12 +196,14 @@ class PersonalOCI:
         candidate = RUNTIME/str(os.getuid())/'gpuq-oci'/self.owner[:32]
         need(len(os.fsencode(candidate)) + len('/conmon-term.XXXXXX') < 108, 'OCI runtime console path too long')
         base = self.s.private_dir(RUNTIME/str(os.getuid()))
-        parent = self.s.private_dir(base/'gpuq-oci', create=True)
-        path = self.s.private_dir(parent/self.owner[:32], create=True)
+        parent = self.s.private_dir(base/'gpuq-oci', create=self.initialize)
+        path = self.s.private_dir(parent/self.owner[:32], create=self.initialize)
         expected = (self.owner+'\n').encode()
         with self.s.directory(path) as directory:
             try: fd = os.open('.owner', os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=directory)
             except FileNotFoundError:
+                if not self.initialize:
+                    raise
                 created = os.open('.owner', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600, dir_fd=directory)
                 try:
                     need(os.write(created, expected) == len(expected), 'OCI runtime owner creation incomplete')
@@ -284,7 +293,7 @@ class PersonalOCI:
         need(directory is None or (name == 'policy.json' and directory in
                                   (self.folder/'home/containers', self.folder/'home/.config/containers')),
              'Invalid private OCI policy directory')
-        folder = self.folder if directory is None else self.s.private_dir(directory, create=True)
+        folder = self.folder if directory is None else self.s.private_dir(directory, create=self.initialize)
         path = folder/name
         identity_key = str(path.relative_to(self.folder))
         with self.s.directory(folder) as parent:
@@ -295,6 +304,8 @@ class PersonalOCI:
             try:
                 fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
             except FileNotFoundError:
+                if not self.initialize:
+                    raise
                 need(identity_key not in getattr(self, '_registry_identities', {}), 'Anonymous OCI authentication file disappeared')
                 created = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
                 try:
@@ -334,6 +345,10 @@ class PersonalOCI:
                 '--cdi-spec-dir='+str(CDI.parent), '--events-backend=file', *args]
 
     def run(self, *args, timeout=30):
+        if not self.initialize:
+            need(args[:2] == ('image', 'inspect') or args in (
+                ('version', '--format', '{{.Client.Version}}'), ('info', '--format=json'),
+            ), 'Existing-only OCI permits inspection only')
         with self.registry_auth() as (env, authfd):
             # containers/image and Buildah stage complete image layers under
             # TMPDIR, not Podman's --tmpdir. Keep those potentially large
@@ -617,6 +632,16 @@ class PersonalOCI:
              and isinstance(receipt['image'], str) and IMAGE.fullmatch(receipt['image']), 'OCI release ownership mismatch')
         need(immutable_image_id(self.run('image', 'inspect', '--format={{.Id}}', receipt['image'])) == receipt['image'], 'Published OCI image is missing; no tag fallback allowed')
         return receipt['image']
+
+    def inspect_existing_image(self, slug, receipt):
+        """Inspect a prepared owner graph; never pull or start a container.
+
+        The engine may use its own existing bookkeeping/locks. This does not
+        promise zero engine-internal writes or prove that user code will run.
+        """
+        need(self.initialize is False, 'Existing image inspection requires no-initialization mode')
+        self.verify_host()
+        return self.verify_image(slug, receipt)
 
     def portable_image(self, slug, receipt):
         """Describe a pinned owner image; never checkpoint a live container."""

@@ -103,6 +103,43 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertFalse(reader.inspect(user_id=self.user, project=self.slug, release=published['release'])['runtimeVerified'])
         self.assertFalse(self.base.exists())
 
+    def test_runtime_identity_observation_checks_base_changes_without_executing_code(self):
+        published = self.publish()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        result = reader.verify_runtime(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertTrue(result['runtimeIdentityVerified'])
+        self.assertEqual(result['runtime'], {'kind': 'base', 'identity': self.store.base_fingerprint()['sha256']})
+        self.assertNotIn('runtimeVerified', result)
+        (self.base/'bin/python3.12').write_bytes(b'changed approved base')
+        with self.assertRaises(module.ProjectError) as error:
+            reader.verify_runtime(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(error.exception.code, 'base_changed')
+
+    def test_runtime_identity_observation_requires_active_project(self):
+        published = self.publish()
+        path, project = self.store._project(self.user, self.slug)
+        module.atomic_json(self.store.lifecycle_folder(self.user, self.slug)/(self.slug+'.json'),
+                          dict(schema=1, owner=project['owner'], project=self.slug, state='ARCHIVED', revision=1))
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        with self.assertRaises(module.ProjectError) as error:
+            reader.verify_runtime(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(error.exception.code, 'project_archived')
+
+    def test_runtime_oci_branch_requests_existing_only_image_verification(self):
+        published = self.publish()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        path, project = self.store._project(self.user, self.slug)
+        meta = self.store._release_meta(path/'releases'/published['release'], published['release'])
+        receipt = dict(schema=1, owner=project['owner'], project=self.slug, image='sha256:'+'a'*64)
+        # Unit-test the routing only: metadata proof and engine are separate fixtures.
+        image = SimpleNamespace(inspect_existing_image=lambda slug, value: value['image'])
+        with patch.object(reader._store, '_release_meta', return_value={**meta, 'environmentMode': 'oci', 'oci': receipt}), \
+                patch.object(reader._store, '_oci', return_value=image) as existing, \
+                patch.object(reader._store, 'base_fingerprint', side_effect=AssertionError('no shared-base fallback')):
+            result = reader.verify_runtime(user_id=self.user, project=self.slug, release=published['release'])
+        existing.assert_called_once_with(self.user, initialize=False)
+        self.assertEqual(result['runtime'], {'kind': 'oci', 'identity': receipt['image']})
+
     def test_existing_reader_does_not_create_missing_lifecycle_lock(self):
         published = self.publish()
         lock = self.store.lifecycle_folder(self.user, self.slug) / (self.slug + '.lock')

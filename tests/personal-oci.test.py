@@ -55,8 +55,64 @@ class OCITests(unittest.TestCase):
         with patch.object(o, 'protected_file', side_effect=AssertionError), \
              patch.object(o.os, 'open', side_effect=AssertionError), \
              patch.object(o.Path, 'mkdir', side_effect=AssertionError):
-            with self.assertRaisesRegex(ValueError, 'hard quotas'):
-                o.PersonalOCI(c, USER)
+            for initialize in (True, False):
+                with self.subTest(initialize=initialize), self.assertRaisesRegex(ValueError, 'hard quotas'):
+                    o.PersonalOCI(c, USER, initialize=initialize)
+
+    def test_existing_only_oci_does_not_create_a_missing_owner_graph(self):
+        with tempfile.TemporaryDirectory() as folder:
+            c = config(); c['root'] = folder; c['storageQuota'] = {'enabled': False}; c['personalOci']['owners'] = [USER]
+            with self.assertRaises(FileNotFoundError):
+                o.PersonalOCI(c, USER, initialize=False)
+            self.assertFalse((Path(folder)/'oci').exists())
+
+    def test_existing_only_oci_skips_quota_and_runtime_preparation_and_only_inspects_images(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); runtime = root/'runtime'
+            (runtime/str(os.getuid())).mkdir(parents=True, mode=0o700)
+            c = config(); c['root'] = str(root); c['storageQuota'] = {'enabled': False}; c['personalOci']['owners'] = [USER]
+            original_module = o.module
+            store = original_module('project-store'); quota = original_module('storage-quota')
+            quota.ensure = Mock(return_value={'enabled': False})
+            def modules(name):
+                return {'project-store': store, 'storage-quota': quota}.get(name) or original_module(name)
+            with patch.object(o, 'module', side_effect=modules), patch.object(o, 'RUNTIME', runtime), \
+                    patch.object(o.PersonalOCI, 'registry_dropin_state', return_value=('fixture-empty',)):
+                prepared = o.PersonalOCI(c, USER)
+                quota.ensure.reset_mock()
+                (prepared.runtime_tmp/'.owner').unlink(); prepared.runtime_tmp.rmdir()
+                before = {str(path.relative_to(root)): (path.stat().st_ino, path.stat().st_mtime_ns) for path in root.rglob('*')}
+                original_open = os.open
+                def read_only_open(path, flags, *args, **kwargs):
+                    self.assertFalse(flags & (os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC), str(path))
+                    return original_open(path, flags, *args, **kwargs)
+                with patch.object(o.os, 'open', side_effect=read_only_open):
+                    existing = o.PersonalOCI(c, USER, initialize=False)
+                    receipt = {'schema': 1, 'owner': existing.owner, 'project': 'training', 'image': 'sha256:'+SHA}
+                    # Only the host/engine response is simulated. Private metadata reads are real.
+                    with patch.object(existing, 'verify_host') as verify_host, \
+                            patch.object(o.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='sha256:'+SHA, stderr='')) as engine:
+                        self.assertEqual(existing.inspect_existing_image('training', receipt), 'sha256:'+SHA)
+                        verify_host.assert_called_once()
+                        self.assertEqual(engine.call_args.args[0][-4:], ['image', 'inspect', '--format={{.Id}}', 'sha256:'+SHA])
+                        with self.assertRaisesRegex(ValueError, 'inspection only'):
+                            existing.run('pull', c['personalOci']['baseImage'])
+                        engine.assert_called_once()
+                        existing.run('version', '--format', '{{.Client.Version}}')
+                        self.assertEqual(engine.call_args.args[0][-3:], ['version', '--format', '{{.Client.Version}}'])
+                        existing.run('info', '--format=json')
+                        self.assertEqual(engine.call_args.args[0][-2:], ['info', '--format=json'])
+                        for operation in [('run', 'image'), ('info', '--debug'), ('system', 'reset')]:
+                            with self.assertRaisesRegex(ValueError, 'inspection only'):
+                                existing.run(*operation)
+                        self.assertEqual(engine.call_count, 3)
+                quota.ensure.assert_not_called()
+                self.assertFalse(prepared.runtime_tmp.exists())
+                self.assertEqual(before, {str(path.relative_to(root)): (path.stat().st_ino, path.stat().st_mtime_ns) for path in root.rglob('*')})
+                auth = existing.folder/'anonymous-registry-auth.json'; auth.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    o.PersonalOCI(c, USER, initialize=False)
+                self.assertFalse(auth.exists())
 
     def test_explicit_oci_cohort_is_independent_of_disabled_disk_quota(self):
         c = config(); c['storageQuota'] = {'enabled': False}; c['personalOci']['owners'] = [USER]

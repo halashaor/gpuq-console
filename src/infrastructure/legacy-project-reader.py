@@ -12,6 +12,9 @@ class LegacyProjectReader:
     def inspect(self, *, user_id, project, release):
         return self._store.inspect_release_metadata(user_id, project, release)
 
+    def verify_runtime(self, *, user_id, project, release):
+        return self._store.inspect_release_runtime(user_id, project, release)
+
 
 def main():
     import importlib.util

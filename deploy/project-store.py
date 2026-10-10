@@ -259,11 +259,13 @@ class ProjectStore:
         spec.loader.exec_module(module)
         module.ensure(self.config, user, path)
 
-    def _oci(self, user):
+    def _oci(self, user, *, initialize=True):
         spec = importlib.util.spec_from_file_location('gpuq_project_oci', Path(__file__).with_name('personal-oci.py'))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.PersonalOCI(self.config, user)
+        if initialize:
+            return module.PersonalOCI(self.config, user)
+        return module.PersonalOCI(self.config, user, initialize=False)
 
     def _project(self, user, slug):
         self._check_root()
@@ -1025,6 +1027,30 @@ class ProjectStore:
         return {'project': slug, 'projectUUID': project['projectUUID'], 'generation': self.generation(user, slug),
                 'release': version, 'environmentMode': meta.get('environmentMode', 'shared'),
                 'lifecycle': self.lifecycle(user, slug)['state'], 'runtimeVerified': False}
+
+    @project_lifetime
+    def inspect_release_runtime(self, user, slug, version):
+        """Verify existing runtime references, without preparing a missing one.
+
+        This does not execute the project's interpreter/code or acquire a run
+        lease. OCI engine inspection may update engine-internal bookkeeping.
+        """
+        observation = self.inspect_release_metadata(user, slug, version)
+        self.admit(user, slug)
+        path, _ = self._project(user, slug)
+        meta = self._release_meta(path / 'releases' / version, version)
+        if meta.get('environmentMode') == 'oci':
+            image = self._oci(user, initialize=False).inspect_existing_image(slug, meta.get('oci'))
+            runtime = {'kind': 'oci', 'identity': image}
+        else:
+            current = self.base_fingerprint()
+            if meta['base'] != current:
+                fail('base_changed', 'Approved base changed; rebuild and publish a new project environment')
+            runtime = {'kind': 'base', 'identity': current['sha256']}
+        if self.inspect_release_metadata(user, slug, version) != observation:
+            fail('changed', 'Project metadata changed during runtime verification')
+        return {key: value for key, value in observation.items() if key != 'runtimeVerified'} | {
+            'runtimeIdentityVerified': True, 'runtime': runtime}
 
     @project_lifetime
     def release(self, user, slug, version):
