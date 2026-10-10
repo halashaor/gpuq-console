@@ -7,9 +7,16 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {dirname} from 'node:path';
 import net from 'node:net';
+import http from 'node:http';
 import {createNodeDispatchBindingsSchema, SqliteNodeDispatchBindings} from '../src/infrastructure/sqlite/node-dispatch-bindings.mjs';
 import {LookupNodeDispatch} from '../src/application/lookup-node-dispatch.mjs';
 import {GpuqReceiptReader} from '../src/infrastructure/gpuq-receipt-reader.mjs';
+import {assembleDispatchReceipt} from '../src/bootstrap/dispatch-receipt.mjs';
+import {HttpDispatchReceipts} from '../src/infrastructure/http-dispatch-receipts.mjs';
+import {DISPATCH_RECEIPT_ROUTE} from '../src/contracts/dispatch-receipt.mjs';
+import {dispatchFixture} from './helpers/v2-dispatch-fixture.mjs';
+import {SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
+import {ReconcileTrainingDispatch} from '../src/application/reconcile-training-dispatch.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
@@ -22,6 +29,31 @@ async function fixture(t) {
   const receipt = {job_id: 'J0123456789ab', submit_key: binding.dispatchId, submit_digest: binding.nativeDigest,
     owner: binding.nativeOwner, name: binding.nativeName, gpu_count: binding.gpuCount, state: 'PENDING'};
   return {db, path, binding, bindings, receipt, reference: {machineId: 'node-1', dispatchId: binding.dispatchId}};
+}
+
+async function nativeServer(t, f) {
+  const socketPath = join(dirname(f.path), 'receipt.sock');
+  const state = {value: f.receipt, rejected: false, requests: []};
+  const server = net.createServer(socket => {
+    let body = ''; socket.setEncoding('utf8'); socket.on('error', () => {});
+    socket.on('data', chunk => {
+      body += chunk; if (!body.endsWith('\n')) return;
+      const request = JSON.parse(body); state.requests.push(request);
+      socket.end(JSON.stringify(state.rejected ? {request_id: request.request_id, ok: false, error: {code: 'NOT_FOUND', message: 'old daemon'}}
+        : {request_id: request.request_id, ok: true, result: state.value}) + '\n');
+    });
+  });
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return {socketPath, state};
+}
+
+const credential = 'c'.repeat(64);
+async function serve(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  return `http://127.0.0.1:${server.address().port}`;
 }
 
 test('fixed node binding persists separately from the coordinator and is idempotent across reopen', async t => {
@@ -75,26 +107,70 @@ test('wrong native key, digest, owner, name or GPU count is never treated as acc
 
 test('node lookup uses the actual Python native protocol bridge without submitting or scanning jobs', async t => {
   const f = await fixture(t); f.bindings.bind(f.binding);
-  const socketPath = join(dirname(f.path), 'receipt.sock'), requests = [];
-  let response = f.receipt, rejected = false;
-  const server = net.createServer(socket => {
-    let body = ''; socket.setEncoding('utf8'); socket.on('error', () => {});
-    socket.on('data', chunk => {
-      body += chunk; if (!body.endsWith('\n')) return;
-      const request = JSON.parse(body); requests.push(request);
-      socket.end(JSON.stringify(rejected ? {request_id: request.request_id, ok: false, error: {code: 'NOT_FOUND', message: 'old daemon'}}
-        : {request_id: request.request_id, ok: true, result: response}) + '\n');
-    });
-  });
-  await new Promise(resolve => server.listen(socketPath, resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  const {socketPath, state} = await nativeServer(t, f);
   const native = new GpuqReceiptReader({socketPath, python: process.env.V2_PYTHON || 'python3'});
   const app = new LookupNodeDispatch({bindings: f.bindings, native});
   assert.equal((await app.execute(f.reference)).nodeJobId, f.receipt.job_id);
-  response = null;
+  state.value = null;
   assert.equal(await app.execute(f.reference), null);
-  rejected = true;
+  state.rejected = true;
   await assert.rejects(app.execute(f.reference), hasCode('GPUQ_RECEIPT_UNAVAILABLE'));
-  assert.ok(requests.every(request => request.op === 'submission_receipt' && request.args.submit_key === f.binding.dispatchId));
-  assert.equal(requests.length, 3);
+  assert.ok(state.requests.every(request => request.op === 'submission_receipt' && request.args.submit_key === f.binding.dispatchId));
+  assert.equal(state.requests.length, 3);
+});
+
+test('reopened coordinator reconciles over HTTP, node mapping and real native protocol bridge', async t => {
+  const coordinator = await dispatchFixture(t), node = await fixture(t);
+  coordinator.dispatches.beginSend(coordinator.jobId, coordinator.now);
+  const delivery = coordinator.dispatches.delivery(coordinator.prepared.dispatchId);
+  const binding = {...node.binding, dispatchId: delivery.dispatchId, jobId: delivery.jobId, accountId: delivery.accountId,
+    machineId: delivery.machineId, gpuCount: delivery.gpuCount, requestHash: delivery.requestHash};
+  node.bindings.bind(binding);
+  const native = await nativeServer(t, node);
+  const receipt = {...node.receipt, submit_key: binding.dispatchId};
+  const origin = await serve(t, assembleDispatchReceipt({database: node.db, machineId: 'node-1', credential,
+    socketPath: native.socketPath, python: process.env.V2_PYTHON || 'python3', reportError() {}}));
+  const reopened = new DatabaseSync(coordinator.database.prepare('PRAGMA database_list').get().file);
+  try {
+    const dispatches = new SqliteTrainingDispatches({database: reopened});
+    const app = new ReconcileTrainingDispatch({dispatches, nodes: new HttpDispatchReceipts({nodes: [{machineId: 'node-1', origin, credential}]})});
+    coordinator.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+    native.state.value = null;
+    assert.equal((await app.execute(delivery.dispatchId)).kind, 'unconfirmed');
+    native.state.rejected = true;
+    await assert.rejects(app.execute(delivery.dispatchId), hasCode('DISPATCH_NODE_UNAVAILABLE'));
+    native.state.rejected = false; native.state.value = {...receipt, submit_digest: '0'.repeat(64)};
+    await assert.rejects(app.execute(delivery.dispatchId), hasCode('DISPATCH_NODE_UNAVAILABLE'));
+    assert.equal(dispatches.delivery(delivery.dispatchId).state, 'SENDING');
+    native.state.value = receipt;
+    const result = await app.execute(delivery.dispatchId);
+    assert.equal(result.kind, 'accepted'); assert.equal(result.dispatch.nodeJobId, receipt.job_id);
+    assert.equal(native.state.requests.length, 4);
+    assert.ok(native.state.requests.every(row => row.op === 'submission_receipt'));
+    assert.equal(coordinator.database.prepare("SELECT gpu_count FROM v2_compute_claims WHERE job_id=? AND state='HELD'").get(coordinator.jobId).gpu_count, 2);
+  } finally {reopened.close();}
+});
+
+test('node receipt endpoint rejects missing credentials, wrong machine and request proof injection before native I/O', async t => {
+  const node = await fixture(t), native = await nativeServer(t, node);
+  const origin = await serve(t, assembleDispatchReceipt({database: node.db, machineId: 'node-1', credential,
+    socketPath: native.socketPath, reportError() {}}));
+  const post = (body, token) => fetch(origin + DISPATCH_RECEIPT_ROUTE, {method: 'POST', headers: {
+    'Content-Type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {}),
+  }, body: JSON.stringify(body)});
+  assert.equal((await post(node.reference)).status, 401);
+  assert.equal((await post({...node.reference, machineId: 'other'}, credential)).status, 409);
+  assert.equal((await post({...node.reference, requestHash: 'a'.repeat(64)}, credential)).status, 400);
+  assert.equal((await post({...node.reference, socketPath: '/private'}, credential)).status, 400);
+  assert.equal(native.state.requests.length, 0);
+});
+
+test('HTTP receipt reader rejects a different dispatch and does not confuse malformed data with not found', async t => {
+  const node = await fixture(t); node.bindings.bind(node.binding);
+  const valid = await new LookupNodeDispatch({bindings: node.bindings, native: {async lookup() {return node.receipt;}}}).execute(node.reference);
+  for (const bad of [{...valid, dispatchId: randomUUID()}, {...valid, machineId: 'other'}, {...valid, requestHash: null}, {}]) {
+    const origin = await serve(t, (req, res) => res.end(JSON.stringify({result: bad})));
+    const reader = new HttpDispatchReceipts({nodes: [{machineId: 'node-1', origin, credential}]});
+    await assert.rejects(reader.lookup(node.reference), hasCode('DISPATCH_NODE_UNAVAILABLE'));
+  }
 });
