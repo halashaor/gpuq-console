@@ -3,6 +3,7 @@ import {SqliteSessionReader} from './session-reader.mjs';
 import {requireActiveSession} from '../../domain/session-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
 import {computeBalance} from '../../domain/compute-balance.mjs';
+import {SqliteTaskAuthority} from './task-authority.mjs';
 
 export function createComputeClaimsSchema(database) {
   transaction(database, () => database.exec(`
@@ -32,7 +33,7 @@ export class SqliteComputeClaims {
     return session;
   }
 
-  #balance(actor, machineId, session) {
+  #balance(actor, machineId, accountRole) {
     const db = this.database;
     const machine = db.prepare(`SELECT m.enabled,m.cards,g.max_cards,g.account_id granted
       FROM v2_machines m LEFT JOIN v2_machine_grants g ON g.machine_id=m.id AND g.account_id=? WHERE m.id=?`).get(actor.id, machineId);
@@ -42,7 +43,7 @@ export class SqliteComputeClaims {
       COALESCE(SUM(CASE WHEN c.machine_id=? THEN c.gpu_count ELSE 0 END),0) on_machine
       FROM v2_compute_claims c JOIN v2_training_requests j ON j.job_id=c.job_id
       WHERE j.account_id=? AND c.state='HELD'`).get(machineId, actor.id);
-    return computeBalance({machineId, admin: session.accountRole === 'admin', accountingReady, totalLimit,
+    return computeBalance({machineId, admin: accountRole === 'admin', accountingReady, totalLimit,
       heldOnMachine: used.on_machine, heldTotal: used.total,
       machine: machine ? {enabled: machine.enabled === 1, cards: machine.cards, maxCards: machine.max_cards, granted: machine.granted !== null} : null});
   }
@@ -54,7 +55,17 @@ export class SqliteComputeClaims {
   balances(actor, machineIds, now) {
     return readTransaction(this.database, () => {
       const session = this.#authorize(actor, now);
-      return machineIds.map(machineId => this.#balance(actor, machineId, session));
+      return machineIds.map(machineId => this.#balance(actor, machineId, session.accountRole));
+    });
+  }
+
+  /** Task-scoped balance observation, with no fabricated session or quota mutation. */
+  balancesForTask(jobId, machineIds) {
+    return readTransaction(this.database, () => {
+      const context = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+      if (context.submission.machines.kind === 'selected'
+        && machineIds.some(id => !context.submission.machines.ids.includes(id))) throw new ApplicationError('TASK_SCOPE_MISMATCH');
+      return machineIds.map(machineId => this.#balance({id: context.accountId}, machineId, context.accountRole));
     });
   }
 
@@ -72,14 +83,14 @@ export class SqliteComputeClaims {
     if (existing) {
       if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
       if (requireCurrentAccess) {
-        const balance = this.#balance(actor, machineId, session);
+        const balance = this.#balance(actor, machineId, session.accountRole);
         if (balance.heldOnMachine > balance.machineLimit || (balance.totalLimit !== null && balance.heldTotal > balance.totalLimit)) {
           throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
         }
       }
       return receipt(existing);
     }
-    const balance = this.#balance(actor, machineId, session);
+    const balance = this.#balance(actor, machineId, session.accountRole);
     if (gpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
     db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, now);
     return receipt(db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId));

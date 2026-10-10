@@ -9,7 +9,8 @@ import {ApplicationError} from '../../domain/errors.mjs';
 export class SqliteTaskAuthority {
   constructor({database}) {this.database = database;}
 
-  #context(jobId) {
+  /** Caller owns a read/write transaction for a consistent authorization snapshot. */
+  contextWithinTransaction(jobId) {
     const row = this.database.prepare(`SELECT j.account_id,j.request_id,j.payload_json,a.enabled,a.role
       FROM v2_training_requests j JOIN v2_training_queue q ON q.job_id=j.job_id
       JOIN v2_accounts a ON a.id=j.account_id WHERE j.job_id=?`).get(jobId);
@@ -20,12 +21,12 @@ export class SqliteTaskAuthority {
     return {jobId, accountId: row.account_id, accountRole: row.role, submission};
   }
 
-  context(jobId) {return readTransaction(this.database, () => this.#context(jobId));}
+  context(jobId) {return readTransaction(this.database, () => this.contextWithinTransaction(jobId));}
 
   requireDataRead(jobId, request) {
     const input = parseDataReadRequest(request);
     return readTransaction(this.database, () => {
-      const context = this.#context(jobId), {submission, accountId, accountRole} = context;
+      const context = this.contextWithinTransaction(jobId), {submission, accountId, accountRole} = context;
       if (submission.machines.kind === 'selected' && !submission.machines.ids.includes(input.machineId)) {
         throw new ApplicationError('TASK_SCOPE_MISMATCH');
       }

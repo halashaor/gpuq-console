@@ -5,10 +5,15 @@ import {ApplicationError} from './errors.mjs';
 export function trainingCandidates(actor, request, facts, now) {
   requireActiveSession(facts.session, now);
   if (facts.session.accountId !== actor.id || facts.session.sessionId !== actor.sessionId) throw new ApplicationError('UNAUTHENTICATED');
-  if (!facts.project || facts.project.ownerId !== actor.id) throw new ApplicationError('FORBIDDEN');
+  return projectCandidates(actor.id, facts.session.accountRole, request, facts);
+}
+
+/** Shared project/machine rules after the caller establishes session or task identity. */
+export function projectCandidates(accountId, accountRole, request, facts) {
+  if (!facts.project || facts.project.ownerId !== accountId) throw new ApplicationError('FORBIDDEN');
   if (facts.project.archived) throw new ApplicationError('PROJECT_ARCHIVED');
   if (!facts.releaseExists) throw new ApplicationError('PROJECT_RELEASE_NOT_FOUND');
-  const admin = facts.session.accountRole === 'admin';
+  const admin = accountRole === 'admin';
   const selected = request.machines.kind === 'selected' ? request.machines.ids
     : facts.machines.filter(machine => admin || machine.granted).map(machine => machine.id);
   const candidates = [], excluded = [];
