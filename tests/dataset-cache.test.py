@@ -469,12 +469,13 @@ class DatasetCacheTests(unittest.TestCase):
             self.assertEqual(self.cache.dispatch(OWNER, {"op": "status", "dataset": "sample", "version": version})["state"], "STAGING")
         self.assertEqual((self.stage(version) / "TRANSFER.json").stat().st_mtime_ns, before)
 
-    def existing_reader(self, root=None, kind='cache', lock_timeout=2.0):
+    def existing_reader(self, root=None, kind='cache', lock_timeout=2.0, coordinator_version=None):
         spec = importlib.util.spec_from_file_location('v2_legacy_cache_reader',
             MODULE_PATH.parents[1] / 'src' / 'infrastructure' / 'legacy-cache-reader.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.LegacyCacheReader(D, root=root or self.root, kind=kind, lock_timeout=lock_timeout)
+        return module.LegacyCacheReader(D, root=root or self.root, kind=kind, lock_timeout=lock_timeout,
+                                       coordinator_version=coordinator_version)
 
     def test_existing_reader_never_creates_root_or_repairs_missing_layout(self):
         absent = self.base / 'not-initialized'
@@ -553,6 +554,21 @@ class DatasetCacheTests(unittest.TestCase):
             with self.assertRaises(D.CacheBusy):
                 reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
         self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')['availability'], 'unavailable')
+
+    def test_coordinator_owned_version_delegates_only_acl_not_integrity_or_other_versions(self):
+        version = self.register()
+        self.cache.materialize(OWNER, 'sample', version)
+        owners = (self.root / '.registry' / 'sample' / 'dataset.json').read_bytes()
+        reader = self.existing_reader(coordinator_version={'dataset': 'sample', 'version': version})
+        self.assertEqual(reader.inspect(user_id=OTHER.user_id, dataset='sample', version=version, kind='cache')['availability'], 'available')
+        self.assertEqual((self.root / '.registry' / 'sample' / 'dataset.json').read_bytes(), owners)
+        with self.assertRaises(PermissionError):
+            reader.inspect(user_id=OTHER.user_id, dataset='sample', version='0' * 64, kind='cache')
+        marker = self.ready(version) / 'READY.json'
+        marker.chmod(0o600)
+        marker.write_text(json.dumps(dict(schema=D.SCHEMA, version='0' * 64)))
+        with self.assertRaisesRegex(D.CacheError, 'corrupt'):
+            reader.inspect(user_id=OTHER.user_id, dataset='sample', version=version, kind='cache')
 
     def test_long_publish_hash_does_not_block_status_and_lock_wait_is_bounded(self):
         version = self.register()

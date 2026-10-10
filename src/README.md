@@ -24,6 +24,7 @@
 - `infrastructure/legacy-cache-reader.py`：窄兼容适配器复用现有发布元数据校验，通过 DatasetCache 的 `initialize=False` 只打开已有布局与锁；不调用工作区、配额、复制或准备。类型由配置固定，已通过本地子进程接入节点观察；旧授权迁移尚未完成，发布目录迁移完成后才退役此适配器。
 - `bootstrap/node-source-reader.mjs`：组合原目录与 `ManagedSourceReader`；后者调用 Python 只读适配器，配置根目录不来自请求。内部协议只接收协调器确认的账号 ID，旧元数据 ACL 暂仍校验该账号。ACL 迁移和仓库 authority 根绑定未完成，不能据此替换生产托管路径。
 - `application/register-managed-source.mjs`：管理员登记显式配置的固定版本，先以配置所有者检查节点，再原子记录资源与机器／类型位置，不存 READY 或伪造宿主路径。`ManagedRegistrationClient` 已接同一 API；旧 ACL 迁移尚未完成，登记不等于新的共享许可已同步旧发布目录。
+- 节点可通过 `coordinatorVersions` 显式将某机器／类型／数据集／版本的授权交给 V2；默认仍保留旧 ACL。请求不能选择此模式，委托不跳过发布完整性检查或开放写操作。原有权限导入与正式入口切换尚待实现，不能直接全库启用。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

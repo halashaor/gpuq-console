@@ -8,18 +8,28 @@ The injected module is the installed, trusted dataset-cache implementation.
 
 
 class LegacyCacheReader:
-    def __init__(self, module, *, root, kind, mount_point=None, lock_timeout=2.0):
+    def __init__(self, module, *, root, kind, mount_point=None, lock_timeout=2.0, coordinator_version=None):
         if kind not in ('cache', 'warehouse'):
             raise ValueError('Invalid configured managed source kind')
         self._kind = kind
         self._module = module
+        if coordinator_version is not None:
+            if not isinstance(coordinator_version, dict) or set(coordinator_version) != {'dataset', 'version'}:
+                raise ValueError('Invalid coordinator-owned version')
+            module._identifier(coordinator_version['dataset'])
+            module._identifier(coordinator_version['version'], module.HASH_RE)
+        self._coordinator_version = dict(coordinator_version) if coordinator_version is not None else None
         self._cache = module.DatasetCache(
             root, mount_point=mount_point, lock_timeout=lock_timeout, initialize=False)
 
     def inspect(self, *, user_id, dataset, version, kind):
         if kind != self._kind:
             raise ValueError('Managed source differs from configured kind')
-        actor = self._module.Principal(user_id, False)
+        # Only a node-configured exact version delegates ACL decisions to V2.
+        # This service privilege is for immutable metadata inspection only; it
+        # does not promote the user or enable any cache mutation API.
+        delegated = self._coordinator_version == {'dataset': dataset, 'version': version}
+        actor = self._module.Principal(user_id, delegated)
         status, _ = self._cache._status_snapshot(
             actor, dataset, version, require_protected=kind == 'warehouse')
         return {'dataset': dataset, 'version': version, 'kind': kind,
@@ -43,7 +53,7 @@ def main():
         if not isinstance(envelope, dict) or set(envelope) != {'config', 'request'}:
             raise ValueError('Invalid inspection envelope')
         config, request = envelope['config'], envelope['request']
-        if not isinstance(config, dict) or set(config) != {'root', 'kind', 'mountPoint'}:
+        if not isinstance(config, dict) or set(config) != {'root', 'kind', 'mountPoint', 'coordinatorVersion'}:
             raise ValueError('Invalid configured source')
         if not isinstance(request, dict) or set(request) != {'userId', 'dataset', 'version', 'kind'}:
             raise ValueError('Invalid inspection request')
@@ -51,7 +61,8 @@ def main():
         spec = importlib.util.spec_from_file_location('v2_published_cache', module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        reader = LegacyCacheReader(module, root=config['root'], kind=config['kind'], mount_point=config['mountPoint'])
+        reader = LegacyCacheReader(module, root=config['root'], kind=config['kind'], mount_point=config['mountPoint'],
+                                   coordinator_version=config['coordinatorVersion'])
         result = reader.inspect(user_id=request['userId'], dataset=request['dataset'], version=request['version'], kind=request['kind'])
         print(json.dumps({'result': result}))
         return 0
