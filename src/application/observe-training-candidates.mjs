@@ -1,10 +1,11 @@
 import {ApplicationError} from '../domain/errors.mjs';
 import {requireProjectObservation, requireProjectRuntimeObservation} from '../domain/project-observation.mjs';
+import {trainingQuotaFit} from '../domain/training-quota-fit.mjs';
 
 /** Existing project/runtime references, not execution admission or GPU reservations. */
 export class ObserveTrainingCandidates {
-  constructor({catalog, projects, data, resources, clock = Date.now}) {
-    this.catalog = catalog; this.projects = projects; this.data = data; this.resources = resources; this.clock = clock;
+  constructor({catalog, projects, data, resources, quota, clock = Date.now}) {
+    this.catalog = catalog; this.projects = projects; this.data = data; this.resources = resources; this.quota = quota; this.clock = clock;
   }
   async execute(actor, request) {
     const snapshot = await this.catalog.snapshot(actor, request, this.clock());
@@ -75,6 +76,12 @@ export class ObserveTrainingCandidates {
     }
     for (const candidate of candidates) {
       await this.data.requireAccess(actor, {machineId: candidate.machineId, sources: request.dataSources});
+    }
+    const balances = await this.quota.balances(actor, candidates.map(candidate => candidate.machineId), this.clock());
+    for (const candidate of candidates) {
+      const balance = balances.find(row => row.machineId === candidate.machineId);
+      if (!balance) throw new ApplicationError('COMPUTE_ACCOUNTING_UNREADY');
+      candidate.quotaFit = trainingQuotaFit(candidate.resourceFit, balance);
     }
     await unchanged();
     return {projectId: snapshot.projectId, projectRevision: snapshot.projectRevision, release: snapshot.release, candidates, excluded};

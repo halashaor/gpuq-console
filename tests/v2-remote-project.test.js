@@ -22,6 +22,9 @@ import {LocalSourceReader} from '../src/infrastructure/local-source-reader.mjs';
 import {ObserveTrainingResources} from '../src/application/observe-training-resources.mjs';
 import {ValidateTrainingResources} from '../src/application/validate-training-resources.mjs';
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
+import {createTrainingRequestSchema, SqliteTrainingRequests} from '../src/infrastructure/sqlite/training-requests.mjs';
+import {createComputeClaimsSchema, SqliteComputeClaims} from '../src/infrastructure/sqlite/compute-claims.mjs';
+import {randomUUID} from 'node:crypto';
 
 const credential = 'c'.repeat(64), context = {actor: {id: 'alice'}}, hasCode = code => error => error.code === code;
 async function serve(t, handler) {
@@ -49,7 +52,10 @@ test('remote project observation and registration use actual node/Python metadat
     sources: new LocalSourceReader({machineId: 'node-1', catalog: new SqliteSourceCatalog({database: f.database})})});
   const resources = new ObserveTrainingResources({validator: new ValidateTrainingResources({policy: new GpuqPolicy({python})}),
     pools: {async inspect() {return {machineId: 'node-1', gpuUuids: ['GPU-a'], freeGpuUuids: ['GPU-a'], dispatchEnabled: true};}}});
-  const observer = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data, resources});
+  createTrainingRequestSchema(f.database); createComputeClaimsSchema(f.database);
+  f.database.exec('UPDATE v2_compute_accounting SET ready=1'); // Empty isolated ledger, not production activation.
+  const quota = new SqliteComputeClaims({database: f.database});
+  const observer = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data, resources, quota});
   const request = {project: {id: 'logical', release: p.release}, machines: {kind: 'any'},
     execution: {env: {}}, resources: {minGpus: 1, maxGpus: 1, elastic: false, autoScaleUp: false, placement: 'any', gpuUuids: [], batch: null, sharing: null},
     scheduling: {priority: 2, mode: 'queue', yieldPolicy: 'never', checkpoint: 'none', restart: 'never'},
@@ -60,7 +66,15 @@ test('remote project observation and registration use actual node/Python metadat
   assert.equal(candidates.candidates[0].runtimeIdentityVerified, true);
   assert.equal(candidates.candidates[0].runtime.kind, 'base');
   assert.equal(candidates.candidates[0].resourceFit.exclusiveFreeFitGpuCount, 1);
+  assert.equal(candidates.candidates[0].quotaFit.exclusiveFreeFitGpuCount, 1);
   assert.deepEqual(candidates.candidates[0].dataReads[0].location, {containerPath: '/datasets/images', readOnly: true});
+  const job = new SqliteTrainingRequests({database: f.database}).record(actor,
+    {requestId: randomUUID(), name: '占额夹具', description: '', preparedSpec: {}}, Date.now());
+  quota.claim(actor, {jobId: job.jobId, machineId: 'node-1', gpuCount: 2}, Date.now());
+  const waiting = await observer.execute(actor, request);
+  assert.equal(waiting.candidates.length, 1);
+  assert.equal(waiting.candidates[0].quotaFit.waitingFor, 'quota');
+  assert.equal(waiting.candidates[0].quotaFit.exclusiveFreeFitGpuCount, null);
   await rename(p.basePath, p.basePath + '-offline');
   const unavailable = await observer.execute(actor, request);
   assert.deepEqual(unavailable.candidates, []);

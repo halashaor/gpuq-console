@@ -41,9 +41,10 @@ async function fixture(t) {
     },
   };
   const data = new ResolveTrainingData({access: {async requireRead() {}}, sources: {async inspect() {return {availability: 'available'};}}});
-  const resources = {async validate() {return {};}, async execute() {return {eligible: true};}};
-  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data, resources});
-  return {...f, actor, observations, calls, runtimeCalls, projects, data, resources, app};
+  const resources = {async validate() {return {};}, async execute() {return {eligible: true, allowedGpuCounts: [1], exclusiveFreeFitGpuCount: 1, waitingFor: null};}};
+  const quota = {async balances(_actor, ids) {return ids.map(machineId => ({machineId, remainingGpus: 4}));}};
+  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data, resources, quota});
+  return {...f, actor, observations, calls, runtimeCalls, projects, data, resources, quota, app};
 }
 
 test('only exact registered active instances and runtime references survive without claiming GPU readiness', async t => {
@@ -177,7 +178,7 @@ test('pool failure excludes one node before project queries and preserves the ne
   const f = await fixture(t);
   f.resources.execute = async (_validated, candidate) => {
     if (candidate.machineId === 'node-1') throw new ApplicationError('GPU_POOL_UNAVAILABLE');
-    return {eligible: true, exclusiveFreeFitGpuCount: null, waitingFor: 'free-capacity'};
+    return {eligible: true, allowedGpuCounts: [1], exclusiveFreeFitGpuCount: null, waitingFor: 'free-capacity'};
   };
   const result = await f.app.execute(f.actor, request);
   assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'resource-unavailable'}]);
@@ -193,4 +194,24 @@ test('machine access revoked during a pool query prevents subsequent project ins
   };
   await assert.rejects(f.app.execute(f.actor, request), hasCode('TRAINING_CONTEXT_CHANGED'));
   assert.deepEqual(f.calls, []);
+});
+
+test('quota is observed after node checks and insufficient balance keeps the candidate waiting', async t => {
+  const f = await fixture(t);
+  f.quota.balances = async (_actor, ids) => {
+    assert.deepEqual(f.runtimeCalls, ['node-1', 'node-2']);
+    assert.deepEqual(ids, ['node-1', 'node-2']);
+    return ids.map(machineId => ({machineId, remainingGpus: 0}));
+  };
+  const result = await f.app.execute(f.actor, request);
+  assert.equal(result.candidates.length, 2);
+  assert.ok(result.candidates.every(row => row.quotaFit.waitingFor === 'quota' && row.quotaFit.exclusiveFreeFitGpuCount === null));
+});
+
+test('incomplete quota observations cannot be treated as unused quota', async t => {
+  const f = await fixture(t);
+  f.quota.balances = async () => [];
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('COMPUTE_ACCOUNTING_UNREADY'));
+  f.quota.balances = async () => {throw new ApplicationError('COMPUTE_ACCOUNTING_UNREADY');};
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('COMPUTE_ACCOUNTING_UNREADY'));
 });

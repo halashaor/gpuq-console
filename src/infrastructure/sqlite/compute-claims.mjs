@@ -48,7 +48,14 @@ export class SqliteComputeClaims {
   }
 
   balance(actor, machineId, now) {
-    return readTransaction(this.database, () => this.#balance(actor, machineId, this.#authorize(actor, now)));
+    return this.balances(actor, [machineId], now)[0];
+  }
+
+  balances(actor, machineIds, now) {
+    return readTransaction(this.database, () => {
+      const session = this.#authorize(actor, now);
+      return machineIds.map(machineId => this.#balance(actor, machineId, session));
+    });
   }
 
   claim(actor, {jobId, machineId, gpuCount}, now) {

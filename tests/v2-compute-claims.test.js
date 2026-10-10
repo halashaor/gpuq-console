@@ -37,6 +37,9 @@ test('machine and total quota include held dispatches, even after a limit is red
   const second = {jobId: f.job(), machineId: 'node-2', gpuCount: 2};
   assert.throws(() => f.claims.claim(f.actor, second, f.now), hasCode('COMPUTE_QUOTA_EXCEEDED'));
   assert.equal(f.claims.balance(f.actor, 'node-2', f.now).remainingGpus, 1);
+  const balances = f.claims.balances(f.actor, ['node-1', 'node-2'], f.now);
+  assert.deepEqual(balances.map(row => row.heldTotal), [3, 3]);
+  assert.deepEqual(balances.map(row => row.heldOnMachine), [3, 0]);
   f.database.exec('UPDATE v2_compute_policies SET total_cards=2');
   const balance = f.claims.balance(f.actor, 'node-1', f.now);
   assert.equal(balance.heldTotal, 3); assert.equal(balance.remainingGpus, 0);
