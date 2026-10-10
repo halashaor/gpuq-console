@@ -16,13 +16,23 @@ export function createComputeClaimsSchema(database) {
       job_id TEXT PRIMARY KEY REFERENCES v2_training_requests(job_id),
       machine_id TEXT NOT NULL REFERENCES v2_machines(id),
       gpu_count INTEGER NOT NULL CHECK(gpu_count BETWEEN 1 AND 4096),
+      reserved_gpu_count INTEGER NOT NULL CHECK(reserved_gpu_count BETWEEN 1 AND 4096),
       state TEXT NOT NULL CHECK(state IN ('HELD','RELEASED')), created_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE v2_compute_expansions (
+      change_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES v2_compute_claims(job_id),
+      from_gpu_count INTEGER NOT NULL CHECK(from_gpu_count>=1),
+      target_gpu_count INTEGER NOT NULL CHECK(target_gpu_count>from_gpu_count AND target_gpu_count<=4096),
+      state TEXT NOT NULL CHECK(state IN ('RESERVED','APPLIED','RELEASED')), created_at_ms INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX v2_compute_expansion_pending ON v2_compute_expansions(job_id) WHERE state='RESERVED';
   `));
 }
 
 const receipt = row => ({jobId: row.job_id, machineId: row.machine_id, gpuCount: row.gpu_count,
-  state: row.state, createdAtMs: row.created_at_ms});
+  reservedGpuCount: row.reserved_gpu_count, state: row.state, createdAtMs: row.created_at_ms});
+const expansionReceipt = row => ({changeId: row.change_id, jobId: row.job_id, fromGpuCount: row.from_gpu_count,
+  targetGpuCount: row.target_gpu_count, state: row.state, createdAtMs: row.created_at_ms});
 
 /** Internal quota ledger, not a GPU lease. Accounting starts unready until cutover/import. */
 export class SqliteComputeClaims {
@@ -40,8 +50,8 @@ export class SqliteComputeClaims {
       FROM v2_machines m LEFT JOIN v2_machine_grants g ON g.machine_id=m.id AND g.account_id=? WHERE m.id=?`).get(actor.id, machineId);
     const accountingReady = db.prepare('SELECT ready FROM v2_compute_accounting WHERE singleton=1').get()?.ready === 1;
     const totalLimit = db.prepare('SELECT total_cards FROM v2_compute_policies WHERE account_id=?').get(actor.id)?.total_cards ?? null;
-    const used = db.prepare(`SELECT COALESCE(SUM(c.gpu_count),0) total,
-      COALESCE(SUM(CASE WHEN c.machine_id=? THEN c.gpu_count ELSE 0 END),0) on_machine
+    const used = db.prepare(`SELECT COALESCE(SUM(c.reserved_gpu_count),0) total,
+      COALESCE(SUM(CASE WHEN c.machine_id=? THEN c.reserved_gpu_count ELSE 0 END),0) on_machine
       FROM v2_compute_claims c JOIN v2_training_requests j ON j.job_id=c.job_id
       WHERE j.account_id=? AND c.state='HELD'`).get(machineId, actor.id);
     return computeBalance({machineId, admin: accountRole === 'admin', accountingReady, totalLimit,
@@ -106,7 +116,7 @@ export class SqliteComputeClaims {
     }
     const balance = this.#balance(actor, machineId, accountRole);
     if (gpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
-    db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, now);
+    db.prepare("INSERT INTO v2_compute_claims VALUES(?,?,?,?,'HELD',?)").run(jobId, machineId, gpuCount, gpuCount, now);
     return receipt(db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId));
   }
 
@@ -117,6 +127,39 @@ export class SqliteComputeClaims {
       if (!job || job.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
       const row = this.database.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
       return row ? receipt(row) : null;
+    });
+  }
+
+  /** Reserve extra quota before a native scale plan; never release on timeout. */
+  reserveExpansionForTask(jobId, {changeId, fromGpuCount, targetGpuCount}, now) {
+    return transaction(this.database, () => {
+      const db = this.database, context = new SqliteTaskAuthority({database: db}).contextWithinTransaction(jobId);
+      if (typeof changeId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(changeId)
+        || !Number.isSafeInteger(fromGpuCount) || !Number.isSafeInteger(targetGpuCount) || targetGpuCount <= fromGpuCount
+        || !context.submission.resources.elastic || !context.submission.resources.autoScaleUp) throw new ApplicationError('INVALID_COMPUTE_EXPANSION');
+      const claim = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
+      if (!claim || claim.state !== 'HELD') throw new ApplicationError('COMPUTE_CLAIM_NOT_HELD');
+      requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: fromGpuCount});
+      requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: targetGpuCount});
+      const existing = db.prepare('SELECT * FROM v2_compute_expansions WHERE change_id=?').get(changeId);
+      if (existing) {
+        if (existing.job_id !== jobId || existing.from_gpu_count !== fromGpuCount || existing.target_gpu_count !== targetGpuCount) {
+          throw new ApplicationError('COMPUTE_EXPANSION_CONFLICT');
+        }
+        return expansionReceipt(existing);
+      }
+      if (db.prepare('SELECT state FROM v2_training_dispatches WHERE job_id=?').get(jobId)?.state !== 'ACCEPTED') {
+        throw new ApplicationError('TRAINING_DISPATCH_NOT_ACCEPTED');
+      }
+      if (db.prepare("SELECT 1 FROM v2_compute_expansions WHERE job_id=? AND state='RESERVED'").get(jobId)) {
+        throw new ApplicationError('COMPUTE_EXPANSION_PENDING');
+      }
+      if (claim.reserved_gpu_count !== fromGpuCount) throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
+      const balance = this.#balance({id: context.accountId}, claim.machine_id, context.accountRole);
+      if (targetGpuCount - fromGpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
+      db.prepare("INSERT INTO v2_compute_expansions VALUES(?,?,?,?,'RESERVED',?)").run(changeId, jobId, fromGpuCount, targetGpuCount, now);
+      db.prepare('UPDATE v2_compute_claims SET reserved_gpu_count=? WHERE job_id=?').run(targetGpuCount, jobId);
+      return expansionReceipt(db.prepare('SELECT * FROM v2_compute_expansions WHERE change_id=?').get(changeId));
     });
   }
 }
