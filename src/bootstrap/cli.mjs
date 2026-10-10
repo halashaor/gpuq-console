@@ -5,6 +5,7 @@ import {SessionClient} from '../client/session-client.mjs';
 import {DataClient} from '../client/data-client.mjs';
 import {AccountClient} from '../client/account-client.mjs';
 import {DirectoryClient} from '../client/directory-client.mjs';
+import {DataAccessImportClient} from '../client/data-access-import-client.mjs';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
@@ -12,6 +13,9 @@ const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
+  --url ORIGIN --credentials FILE access-import-plan --resource ID
+  --url ORIGIN --credentials FILE access-import --resource ID --plan SHA256 --request UUID
+  --url ORIGIN --credentials FILE access-import-status --request UUID
   --url ORIGIN --credentials FILE read --machine ID --kind directory --source ID
   --url ORIGIN --credentials FILE read --machine ID --kind warehouse|cache --dataset ID --version SHA256
 Credentials parent directory must already exist. Password is read from stdin, never an argument.
@@ -36,16 +40,31 @@ export async function runCli({argv, stdin, stdout}) {
     machine: {type: 'string'}, kind: {type: 'string'}, source: {type: 'string'},
     dataset: {type: 'string'}, version: {type: 'string'},
     after: {type: 'string'}, limit: {type: 'string'},
+    resource: {type: 'string'}, plan: {type: 'string'}, request: {type: 'string'},
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
-  if (positionals.length !== 1 || !['login', 'current', 'logout', 'read', 'accounts', 'register-directory'].includes(command)
-    || !values.url || !values.credentials) throw new Error('Specify command, --url and --credentials; see --help');
+  if (positionals.length !== 1 || !values.url || !values.credentials) throw new Error('Specify command, --url and --credentials; see --help');
   if (command === 'login' && (!values.username || !values['password-stdin'])) {
     throw new Error('Login requires --username and --password-stdin');
   }
   // Validate destination before opening a local credential file.
   const transport = new JsonHttpTransport({baseUrl: values.url});
+  const actions = {
+    current: ({identity, expiry}) => ({...identity, ...expiry}),
+    accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
+    'register-directory': () => new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source}),
+    'access-import-plan': () => new DataAccessImportClient({transport}).plan({resourceId: values.resource}),
+    'access-import': () => new DataAccessImportClient({transport}).apply({resourceId: values.resource, planId: values.plan, requestId: values.request}),
+    'access-import-status': () => new DataAccessImportClient({transport}).receipt({requestId: values.request}),
+    read: () => {
+      const source = values.kind === 'directory'
+        ? {kind: values.kind, sourceId: values.source}
+        : {kind: values.kind, datasetId: values.dataset, version: values.version};
+      return new DataClient({transport}).resolveReadLocation({machineId: values.machine, source});
+    },
+  };
+  if (!['login', 'logout'].includes(command) && !Object.hasOwn(actions, command)) throw new Error('Unknown command; see --help');
   transport.session.close();
   const store = openClientCredentials(values.credentials);
   try {
@@ -58,15 +77,7 @@ export async function runCli({argv, stdin, stdout}) {
       if (command === 'logout') result = await session.logout();
       else {
         const expiry = await session.refresh();
-        if (command === 'current') result = {...identity, ...expiry};
-        else if (command === 'accounts') result = await new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)});
-        else if (command === 'register-directory') result = await new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source});
-        else {
-          const source = values.kind === 'directory'
-            ? {kind: values.kind, sourceId: values.source}
-            : {kind: values.kind, datasetId: values.dataset, version: values.version};
-          result = await new DataClient({transport}).resolveReadLocation({machineId: values.machine, source});
-        }
+        result = await actions[command]({identity, expiry});
       }
     }
     stdout.write(JSON.stringify(result) + '\n');
