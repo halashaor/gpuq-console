@@ -469,6 +469,91 @@ class DatasetCacheTests(unittest.TestCase):
             self.assertEqual(self.cache.dispatch(OWNER, {"op": "status", "dataset": "sample", "version": version})["state"], "STAGING")
         self.assertEqual((self.stage(version) / "TRANSFER.json").stat().st_mtime_ns, before)
 
+    def existing_reader(self, root=None, kind='cache', lock_timeout=2.0):
+        spec = importlib.util.spec_from_file_location('v2_legacy_cache_reader',
+            MODULE_PATH.parents[1] / 'src' / 'infrastructure' / 'legacy-cache-reader.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.LegacyCacheReader(D, root=root or self.root, kind=kind, lock_timeout=lock_timeout)
+
+    def test_existing_reader_never_creates_root_or_repairs_missing_layout(self):
+        absent = self.base / 'not-initialized'
+        with self.assertRaises(FileNotFoundError):
+            self.existing_reader(absent)
+        self.assertFalse(absent.exists())
+        (self.root / '.reopens').rmdir()
+        with self.assertRaises(FileNotFoundError):
+            self.existing_reader()
+        self.assertFalse((self.root / '.reopens').exists())
+
+    def test_existing_reader_uses_read_only_opens_without_scans_quota_or_preparation(self):
+        version = self.register()
+        self.cache.materialize(OWNER, 'sample', version)
+        before = {str(path.relative_to(self.root)): (path.stat().st_ino, path.stat().st_mtime_ns, path.stat().st_size)
+                  for path in self.root.rglob('*')}
+        # Load adapter code before auditing dataset I/O, independent of pyc state.
+        reader_type = type(self.existing_reader())
+        original_open = os.open
+
+        def read_only_open(path, flags, *args, **kwargs):
+            self.assertFalse(flags & (os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC), str(path))
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch.object(D.os, 'open', side_effect=read_only_open), \
+                patch.object(D, '_mkdir', side_effect=AssertionError('must not initialize')), \
+                patch.object(D, '_scan', side_effect=AssertionError('must not scan data')), \
+                patch.object(D.DatasetCache, '_free', side_effect=AssertionError('must not check free space')), \
+                patch.object(D.DatasetCache, 'plan', side_effect=AssertionError('must not prepare')):
+            reader = reader_type(D, root=self.root, kind='cache')
+            self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache'),
+                             dict(dataset='sample', version=version, kind='cache', availability='available'))
+        after = {str(path.relative_to(self.root)): (path.stat().st_ino, path.stat().st_mtime_ns, path.stat().st_size)
+                 for path in self.root.rglob('*')}
+        self.assertEqual(after, before)
+
+    def test_existing_reader_missing_lock_is_not_created_by_observation(self):
+        version = self.register()
+        (self.root / '.lock').unlink()
+        reader = self.existing_reader()
+        with self.assertRaises(FileNotFoundError):
+            reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+        self.assertFalse((self.root / '.lock').exists())
+
+    def test_existing_reader_checks_owner_readiness_and_protected_warehouse_tier(self):
+        version = self.register()
+        reader = self.existing_reader()
+        self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')['availability'], 'unavailable')
+        with self.assertRaises(PermissionError):
+            reader.inspect(user_id=OTHER.user_id, dataset='sample', version=version, kind='cache')
+        self.cache.materialize(OWNER, 'sample', version)
+        with self.cache._locked():
+            tier = self.cache._tier('sample', version)
+            tier['role'] = 'cache'
+            self.cache._write_tier('sample', version, tier)
+        with self.assertRaisesRegex(ValueError, 'configured kind'):
+            reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='warehouse')
+        with self.assertRaisesRegex(D.CacheError, 'protected original'):
+            self.existing_reader(kind='warehouse').inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='warehouse')
+        original = self.existing_reader(self.base / 'protected-original', kind='warehouse')
+        self.assertEqual(original.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='warehouse')['availability'], 'available')
+
+    def test_existing_reader_does_not_accept_corrupt_ready_marker(self):
+        version = self.register()
+        self.cache.materialize(OWNER, 'sample', version)
+        marker = self.ready(version) / 'READY.json'
+        marker.chmod(0o600)
+        marker.write_text(json.dumps(dict(schema=D.SCHEMA, version='0' * 64)))
+        with self.assertRaisesRegex(D.CacheError, 'corrupt'):
+            self.existing_reader().inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+
+    def test_existing_reader_respects_writer_lock_and_reports_busy_without_repair(self):
+        version = self.register()
+        reader = self.existing_reader(lock_timeout=0.01)
+        with self.cache._locked():
+            with self.assertRaises(D.CacheBusy):
+                reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
+        self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')['availability'], 'unavailable')
+
     def test_long_publish_hash_does_not_block_status_and_lock_wait_is_bounded(self):
         version = self.register()
         token = self.fill(version)

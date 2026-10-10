@@ -174,6 +174,14 @@ def _mkdir(path):
             os.close(fd)
 
 
+def _existing_owned_directory(path):
+    """Validate an existing service directory without creating or repairing it."""
+    with _directory(path) as fd:
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise CacheError("cache directory must be owned by the service and not writable by others")
+
+
 def _json_bytes(value):
     data = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     if len(data) > MAX_JSON_BYTES:
@@ -495,7 +503,10 @@ def _data2_mount():
 
 class DatasetCache:
     def __init__(self, root="/data2/datasets", *, sources=None, reserve_bytes=DEFAULT_RESERVE,
-                 lock_timeout=2.0, mount_point=None, budget_bytes=None):
+                 lock_timeout=2.0, mount_point=None, budget_bytes=None, initialize=True):
+        if type(initialize) is not bool:
+            raise CacheError("invalid cache initialization mode")
+        self.initialize = initialize
         self.root = _absolute(root)
         if str(self.root) in BROAD or type(reserve_bytes) is not int or reserve_bytes < 0:
             raise CacheError("unsafe cache root or reserve")
@@ -525,14 +536,15 @@ class DatasetCache:
                     or path == self.root or path in self.root.parents or self.root in path.parents):
                 raise CacheError("unsafe approved source directory")
             self.sources[key] = path
-        _mkdir(self.root)
+        prepare_directory = _mkdir if initialize else _existing_owned_directory
+        prepare_directory(self.root)
         with _directory(self.root) as fd:
             info = os.fstat(fd)
             if self.mount is not None and info.st_dev != self.mount[2]:
                 raise CacheError("cache no longer resides on the verified data mount")
             self._root_identity = info.st_dev, info.st_ino
         for name in (".registry", ".staging", "ready", ".leases", ".trash", ".locks", ".upload-reservations", ".tiers", ".provenance", ".retirements", ".reopens"):
-            _mkdir(self.root / name)
+            prepare_directory(self.root / name)
 
     def _retirement_fence(self, dataset, version):
         """Private persistent generation fence; missing is the only open case."""
@@ -825,7 +837,8 @@ class DatasetCache:
                 raise CacheError("cache no longer resides on the verified data mount")
             if os.fstat(parent).st_dev != os.fstat(root).st_dev:
                 raise CacheError("cache lock directory is on a different filesystem")
-            fd = os.open(Path(name).name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
+            access = os.O_CREAT | os.O_RDWR if self.initialize else os.O_RDONLY
+            fd = os.open(Path(name).name, access | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
             try:
                 _regular(fd)
                 policy = _LOCK_WAIT.get()
@@ -1804,7 +1817,7 @@ class DatasetCache:
         """Lightweight metadata only: no data hashing or staging modifications."""
         return self._status_snapshot(actor, dataset, version)[0]
 
-    def _status_snapshot(self, actor, dataset, version):
+    def _status_snapshot(self, actor, dataset, version, *, require_protected=False):
         """Trusted adapter also receives the validated registration identity."""
         try:
             record, identity = self._record_snapshot(actor, dataset, version, _read_only=True)
@@ -1816,9 +1829,9 @@ class DatasetCache:
         ready, ready_identity = self._ready_snapshot(paths, record["manifest"], version)
         remaining = 0 if ready else sum(f["size"] for f in record["manifest"]["files"])
         return self._status_catalog_snapshot(actor, dataset, version,
-                                             (identity, ready_identity, ready, remaining)), identity
+                                             (identity, ready_identity, ready, remaining), require_protected=require_protected), identity
 
-    def _status_catalog_snapshot(self, actor, dataset, version, snapshot):
+    def _status_catalog_snapshot(self, actor, dataset, version, snapshot, *, require_protected=False):
         """Trusted same-call catalog snapshot; never a public request field."""
         identity, ready_identity, ready, remaining = snapshot
         paths = self._paths(dataset, version)
@@ -1834,6 +1847,8 @@ class DatasetCache:
             if fence is not None and fence['state'] != 'RESTORED':
                 return dict(dataset=dataset, version=version, state='UNKNOWN', remainingBytes=remaining,
                             deletionBlocked=True, error='数据删除已锁定此版本，请查询删除任务。')
+            if require_protected and self._tier(dataset, version)['role'] != 'protected':
+                raise CacheError('warehouse inspection requires a protected original')
             return dict(dataset=dataset, version=version, state=state, remainingBytes=remaining)
 
     def _transfer(self, stage):

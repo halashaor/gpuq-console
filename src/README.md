@@ -21,6 +21,7 @@
 - `application/data-access.mjs`：管理员查询／替换私有来源的读者名单；`DataAccessClient` 使用同一 API。读者和 ACL 修订原子写入，不修改来源绑定、可见性、所有权或机器授权；共享来源不使用此接口假装取消共享。可见性修改与管理页面仍待接。
 - `application/register-directory.mjs`：将操作者预配置的已有目录登记为可选择来源，不复制或探测全目录；权限与绑定在事务内确认，重复相同登记共用资源 ID，冲突不覆盖。`ConfiguredDirectories` 只接受可信配置，API／SDK 只接收机器和来源名。独立 CLI 的 `register-directory` 已接通；托管版本登记与生产配置导入尚未完成。
 - `infrastructure/http-source-reader.mjs` 与 `api/source-inspection-handler.mjs`：固定节点只读观察通道，独立服务凭据，不接受宿主路径、重定向或自动换机。`assembleSqliteDataRead` 注入该 reader 后在远端 I/O 前后核对用户权限。当前以本地真实 HTTP 节点验证，生产节点与托管版本 READY 证明尚未接入。
+- `infrastructure/legacy-cache-reader.py`：窄兼容适配器复用现有发布元数据校验，通过 DatasetCache 的 `initialize=False` 只打开已有布局与锁；不调用工作区、配额、复制或准备。类型由配置固定，尚未连接节点 API／托管登记；发布目录迁移完成后才退役此适配器。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
 - `bootstrap/sqlite-data-read.mjs`：节点本地 SQLite 集成入口；VPS 必须选择远端来源适配器，不能把远端路径拿到 VPS 上检查。
 - `api/data-read-handler.mjs`：认证、报文解析和错误映射；内部诊断留在服务端。
