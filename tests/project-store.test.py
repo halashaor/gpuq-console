@@ -58,6 +58,106 @@ class ProjectStoreTests(unittest.TestCase):
     def publish(self):
         return self.store.publish(self.user, self.slug)
 
+    def existing_reader_type(self):
+        path = Path(__file__).resolve().parents[1] / 'src' / 'infrastructure' / 'legacy-project-reader.py'
+        spec = importlib.util.spec_from_file_location('v2_project_reader', path)
+        reader = importlib.util.module_from_spec(spec); spec.loader.exec_module(reader)
+        return reader.LegacyProjectReader
+
+    def test_existing_metadata_reader_does_not_prepare_or_write(self):
+        published = self.publish()
+        reader_type = self.existing_reader_type()
+        before = {str(path.relative_to(self.root)): (path.lstat().st_ino, path.lstat().st_mtime_ns)
+                  for path in self.root.rglob('*')}
+        original_open = os.open
+        def read_only_open(path, flags, *args, **kwargs):
+            self.assertFalse(flags & (os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC), str(path))
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(module.os, 'open', side_effect=read_only_open), \
+                patch.object(module.ProjectStore, '_quota', side_effect=AssertionError('no quota preparation')), \
+                patch.object(module.ProjectStore, '_space', side_effect=AssertionError('no space admission')), \
+                patch.object(module.ProjectStore, '_oci', side_effect=AssertionError('no OCI initialization')), \
+                patch.object(module.ProjectStore, 'base_fingerprint', side_effect=AssertionError('no runtime/base verification')):
+            reader = reader_type(module, root=self.root, base_path=self.base)
+            result = reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(result['projectUUID'], self.store.project_uuid(self.user, self.slug))
+        self.assertEqual(result['generation'], self.store.generation(self.user, self.slug))
+        self.assertEqual(result['release'], published['release'])
+        self.assertEqual(result['lifecycle'], 'ACTIVE')
+        self.assertFalse(result['runtimeVerified'])
+        self.assertNotIn(str(self.root), json.dumps(result))
+        after = {str(path.relative_to(self.root)): (path.lstat().st_ino, path.lstat().st_mtime_ns)
+                 for path in self.root.rglob('*')}
+        self.assertEqual(before, after)
+
+    def test_existing_reader_does_not_create_missing_project_layout(self):
+        root = self.path / 'empty-service'; root.mkdir(mode=0o700)
+        with self.assertRaises(FileNotFoundError):
+            self.existing_reader_type()(module, root=root, base_path=self.base)
+        self.assertFalse((root / 'projects-v2').exists())
+
+    def test_existing_reader_does_not_create_missing_lifecycle_lock(self):
+        published = self.publish()
+        lock = self.store.lifecycle_folder(self.user, self.slug) / (self.slug + '.lock')
+        lock.unlink()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        with self.assertRaises(FileNotFoundError):
+            reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertFalse(lock.exists())
+
+    def test_existing_reader_rejects_missing_identity_and_corrupt_release(self):
+        published = self.publish()
+        path, meta = self.store._project(self.user, self.slug)
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        original = dict(meta); meta.pop('projectUUID')
+        module.atomic_json(path / 'project.json', meta)
+        with self.assertRaises(module.ProjectError) as error:
+            reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(error.exception.code, 'identity_missing')
+        module.atomic_json(path / 'project.json', original)
+        ready = path / 'releases' / published['release'] / 'READY.json'
+        ready.chmod(0o600); ready.write_text('{}')
+        with self.assertRaises(module.ProjectError):
+            reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+
+    def test_existing_reader_preserves_owner_and_lifecycle_boundaries(self):
+        published = self.publish()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        with self.assertRaises(FileNotFoundError):
+            reader.inspect(user_id='another-user', project=self.slug, release=published['release'])
+        path, project = self.store._project(self.user, self.slug)
+        receipt = self.store.lifecycle_folder(self.user, self.slug) / (self.slug + '.json')
+        value = dict(schema=1, owner=project['owner'], project=self.slug, state='ARCHIVED', revision=1)
+        module.atomic_json(receipt, value)
+        self.assertEqual(reader.inspect(user_id=self.user, project=self.slug, release=published['release'])['lifecycle'], 'ARCHIVED')
+        module.atomic_json(receipt, {**value, 'state': 'RETIRING', 'revision': 2})
+        with self.assertRaises(module.ProjectError) as error:
+            reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(error.exception.code, 'project_retired')
+
+    def test_same_name_replacement_has_a_different_observed_instance_generation(self):
+        published = self.publish()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        first = reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        path, _ = self.store._project(self.user, self.slug)
+        previous = path.with_name('.previous-project')
+        path.rename(previous)
+        shutil.copytree(previous, path, symlinks=True)
+        second = reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(first['projectUUID'], second['projectUUID'])
+        self.assertNotEqual(first['generation'], second['generation'])
+
+    def test_metadata_observation_ignores_draft_write_lock_but_respects_retirement_lock(self):
+        published = self.publish()
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        with self.store.locked(self.user, self.slug):
+            self.assertEqual(reader.inspect(user_id=self.user, project=self.slug, release=published['release'])['release'], published['release'])
+        with self.store.lifetime(self.user, self.slug, exclusive=True), \
+                patch.object(module, 'PROJECT_LOCK_WAIT_SECONDS', 0.01):
+            with self.assertRaises(module.ProjectError) as error:
+                reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
+        self.assertEqual(error.exception.code, 'project_busy')
+
     def assert_error(self, code, function, *args):
         with self.assertRaises(module.ProjectError) as raised:
             function(*args)

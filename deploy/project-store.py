@@ -208,7 +208,10 @@ class ProjectStore:
 
     def __init__(self, root, base_path, reserve_bytes=10 * 1024**3, *,
                  max_entries=200000, warning_bytes=50 * 1024**3,
-                 max_projects=64, max_releases=64, config=None):
+                 max_projects=64, max_releases=64, config=None, initialize=True):
+        if type(initialize) is not bool:
+            fail('invalid_input', 'Invalid project initialization mode')
+        self.initialize = initialize
         self.root = absolute(root)
         self.config = config or {'root': str(self.root)}
         check_platform_root(self.root)
@@ -228,8 +231,8 @@ class ProjectStore:
         # The configured base is an operator-approved installation. Read only.
         with directory(self.base):
             pass
-        private_dir(self.path, create=True)
-        private_dir(self.path / '.run-claims', create=True)
+        private_dir(self.path, create=initialize)
+        private_dir(self.path / '.run-claims', create=initialize)
 
     def _check_root(self):
         check_platform_root(self.root)
@@ -285,8 +288,8 @@ class ProjectStore:
     def lifecycle_folder(self, user, slug):
         self._check_root()
         owner = self._identity(user, slug)
-        parent = private_dir(self.path / owner, create=True)
-        return private_dir(parent / '.lifecycle', create=True)
+        parent = private_dir(self.path / owner, create=self.initialize)
+        return private_dir(parent / '.lifecycle', create=self.initialize)
 
     def lifecycle(self, user, slug):
         owner = self._identity(user, slug)
@@ -314,7 +317,8 @@ class ProjectStore:
                 fail('project_busy', 'Cannot upgrade an active project reader to retirement')
             yield
             return
-        fd = os.open(key, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        access = os.O_RDWR | os.O_CREAT if self.initialize else os.O_RDONLY
+        fd = os.open(key, access | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
@@ -361,7 +365,8 @@ class ProjectStore:
 
     @contextlib.contextmanager
     def _file_lock(self, path, blocking=False):
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        access = os.O_RDWR | os.O_CREAT if self.initialize else os.O_RDONLY
+        fd = os.open(path, access | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o077:
@@ -995,6 +1000,30 @@ class ProjectStore:
         if ready != self._ready_marker(meta) or meta.get('release') != version or digest(payload) != version:
             fail('unsafe_path', 'Release is incomplete or metadata is inconsistent')
         return meta
+
+    @project_lifetime
+    def inspect_release_metadata(self, user, slug, version):
+        """Observe one immutable release, without workspace/OCI preparation.
+
+        Runtime image/base verification and a persistent run lease are separate.
+        """
+        path, project = self._project(user, slug)
+        if project.get('projectUUID') is None:
+            fail('identity_missing', 'Project needs an explicit persistent identity before registration')
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            fail('invalid_input', 'Invalid immutable project release')
+        target = path / 'releases' / version
+        meta = self._release_meta(target, version)
+        if meta.get('owner') != project['owner'] or meta.get('project') != slug:
+            fail('unsafe_path', 'Release belongs to another project')
+        for name in ('code', 'env'):
+            with directory(target / name) as fd:
+                info = os.fstat(fd)
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o555:
+                    fail('unsafe_path', 'Published project trees must remain service-owned and read-only')
+        return {'project': slug, 'projectUUID': project['projectUUID'], 'generation': self.generation(user, slug),
+                'release': version, 'environmentMode': meta.get('environmentMode', 'shared'),
+                'lifecycle': self.lifecycle(user, slug)['state'], 'runtimeVerified': False}
 
     @project_lifetime
     def release(self, user, slug, version):
