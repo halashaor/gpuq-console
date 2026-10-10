@@ -359,8 +359,8 @@ export function warehouseStorageCards(overview,model,capacities=new Map(),conten
     const checkedAt=volumes[0]?.volume.checkedAt??raw?.volume?.checkedAt??overview?.checkedAt??model?.checkedAt??null;
     const collectedAt=volumes[0]?.volume.collectedAt??raw?.volume?.collectedAt??null;
     return {machine:row.machine,uploadTarget:row.machine===uploadTarget,...totals,contentBytes,known:valid&&contentBytes!==null,collectedAt,timestamp:volumes[0]?.volume.timestamp??raw?.volume?.timestamp??null,
-      datasetCount:sum(volumes.map(v=>v.datasetCount))??(model&&!unconfirmed.has(row.machine)&&model.machines.some(m=>m.machine===row.machine&&m.state==='ok')?row.datasets.size:row.datasets.size||null),checkedAt,
-      usageComplete:volumes.length?volumes.every(v=>v.usageComplete):!unconfirmed.has(row.machine)&&model?.machines.some(m=>m.machine===row.machine&&m.state==='ok')===true,
+      datasetCount:sum(volumes.map(v=>v.datasetCount))??(!unconfirmed.has(row.machine)&&list(model?.machines).some(m=>m.machine===row.machine&&m.state==='ok')?row.datasets.size:row.datasets.size||null),checkedAt,
+      usageComplete:volumes.length?volumes.every(v=>v.usageComplete):!unconfirmed.has(row.machine)&&list(model?.machines).some(m=>m.machine===row.machine&&m.state==='ok'),
       contentLoading:volumes.some(v=>v.loading)||!model,stale:volumes.some(v=>v.stale),catalogCollectedAt:volumes[0]?.catalogCollectedAt??model?.checkedAt??null,
       warning:volumes.some(v=>list(v.warnings).some(w=>['WAREHOUSE_USAGE_HIGH','WAREHOUSE_FREE_SPACE_LOW'].includes(w?.code)))||
         valid&&(totals.usedBytes/totals.totalBytes>=.9||totals.reserveBytes!==null&&totals.availableBytes<=totals.reserveBytes)};

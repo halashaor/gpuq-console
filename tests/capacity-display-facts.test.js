@@ -43,6 +43,8 @@ test('warehouse progressive fallback reads its own volume before a full overview
   assert.equal(cards[0].availableBytes,1000);
   assert.equal(cards[0].contentBytes,null,'a physical reading cannot invent dataset content');
   assert.equal(cards[0].collectedAt,at);
+  assert.equal(cards[0].usageComplete,false);
+  assert.equal(cards[0].datasetCount,null,'missing catalog must not invent an empty confirmed warehouse');
 });
 
 test('old nodes and an unknown protocol keep the original capacity projection without a warehouse',async()=>{
