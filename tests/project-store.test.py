@@ -96,6 +96,13 @@ class ProjectStoreTests(unittest.TestCase):
             self.existing_reader_type()(module, root=root, base_path=self.base)
         self.assertFalse((root / 'projects-v2').exists())
 
+    def test_metadata_observation_does_not_require_a_present_runtime_base(self):
+        published = self.publish()
+        self.base.rename(self.base.with_name('offline-base'))
+        reader = self.existing_reader_type()(module, root=self.root, base_path=self.base)
+        self.assertFalse(reader.inspect(user_id=self.user, project=self.slug, release=published['release'])['runtimeVerified'])
+        self.assertFalse(self.base.exists())
+
     def test_existing_reader_does_not_create_missing_lifecycle_lock(self):
         published = self.publish()
         lock = self.store.lifecycle_folder(self.user, self.slug) / (self.slug + '.lock')

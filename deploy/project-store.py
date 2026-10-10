@@ -229,8 +229,9 @@ class ProjectStore:
                 fail('unsafe_path', 'Console root must be service-owned and not group/world writable')
             self.root_identity = (info.st_dev, info.st_ino)
         # The configured base is an operator-approved installation. Read only.
-        with directory(self.base):
-            pass
+        if initialize:
+            with directory(self.base):
+                pass
         private_dir(self.path, create=initialize)
         private_dir(self.path / '.run-claims', create=initialize)
 

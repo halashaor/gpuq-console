@@ -1,9 +1,7 @@
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {jsonProcess} from './json-process.mjs';
 import {fileURLToPath} from 'node:url';
 import {ApplicationError} from '../domain/errors.mjs';
 
-const run = promisify(execFile);
 const script = fileURLToPath(new URL('./gpuq-policy.py', import.meta.url));
 
 /** Reuses native pure policy. These results never reserve or release a GPU. */
@@ -19,18 +17,14 @@ export class GpuqPolicy {
 
   async #evaluate(operation, args) {
     try {
-      const running = run(this.python, ['-B', script], {encoding: 'utf8', timeout: this.timeoutMs, maxBuffer: 65536});
-      let inputError;
-      running.child.stdin.once('error', error => {inputError = error;});
-      running.child.stdin.end(JSON.stringify({operation, args}));
-      const {stdout} = await running;
-      if (inputError) throw inputError;
-      const response = JSON.parse(stdout);
+      const response = await jsonProcess({program: this.python, args: ['-B', script], input: {operation, args},
+        timeoutMs: this.timeoutMs, maxBytes: 65536});
       if (!response || !Object.hasOwn(response, 'result')) throw new Error('Missing policy result');
       return response.result;
     } catch (cause) {
       let code;
       try {code = JSON.parse(cause.stdout).error?.code;} catch {}
+      if (cause.code === 'NATIVE_REQUEST_TOO_LARGE') code = 'INVALID_SCHEDULING_REQUEST';
       throw new ApplicationError(code === 'INVALID_SCHEDULING_REQUEST' ? code : 'SCHEDULING_POLICY_UNAVAILABLE', {cause});
     }
   }

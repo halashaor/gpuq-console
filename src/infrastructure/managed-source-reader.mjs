@@ -1,11 +1,9 @@
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {jsonProcess} from './json-process.mjs';
 import {fileURLToPath} from 'node:url';
 import {isAbsolute} from 'node:path';
 import {ApplicationError} from '../domain/errors.mjs';
 import {parseDataReadRequest} from '../contracts/data-read.mjs';
 
-const run = promisify(execFile);
 const script = fileURLToPath(new URL('./legacy-cache-reader.py', import.meta.url));
 
 /** Node-local adapter. The caller never supplies a root, interpreter or admin flag. */
@@ -55,17 +53,13 @@ export class ManagedSourceReader {
     const source = request.source, config = this.#roots.get(source.kind);
     if (!config) throw new ApplicationError('SOURCE_UNAVAILABLE');
     try {
-      const running = run(this.python, ['-B', script], {encoding: 'utf8', timeout: this.timeoutMs, maxBuffer: 8192});
-      let inputError;
-      running.child.stdin.once('error', error => {inputError = error;});
       const coordinatorVersion = this.#coordinatorVersions.has(`${source.kind}/${source.datasetId}/${source.version}`)
         ? {dataset: source.datasetId, version: source.version} : null;
-      running.child.stdin.end(JSON.stringify({operation, config: {...config, coordinatorVersion}, request: {
+      const response = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: this.timeoutMs,
+        input: {operation, config: {...config, coordinatorVersion}, request: {
         userId: actor.id, dataset: source.datasetId, version: source.version, kind: source.kind,
-      }}));
-      const {stdout} = await running;
-      if (inputError) throw inputError;
-      const result = JSON.parse(stdout).result;
+      }}});
+      const result = response.result;
       if (result?.dataset !== source.datasetId || result?.version !== source.version || result?.kind !== source.kind) throw new Error('Managed source identity mismatch');
       return result;
     } catch (cause) {

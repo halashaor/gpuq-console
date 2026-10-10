@@ -11,3 +11,37 @@ class LegacyProjectReader:
 
     def inspect(self, *, user_id, project, release):
         return self._store.inspect_release_metadata(user_id, project, release)
+
+
+def main():
+    import importlib.util
+    import json
+    from pathlib import Path
+    import sys
+    sys.dont_write_bytecode = True
+    try:
+        raw = sys.stdin.buffer.read(8193)
+        if len(raw) > 8192:
+            raise ValueError('Project request too large')
+        value = json.loads(raw)
+        if not isinstance(value, dict) or set(value) != {'config', 'request'}:
+            raise ValueError('Invalid project envelope')
+        config, request = value['config'], value['request']
+        if not isinstance(config, dict) or set(config) != {'root', 'basePath'}:
+            raise ValueError('Invalid project configuration')
+        if not isinstance(request, dict) or set(request) != {'accountId', 'project', 'release'}:
+            raise ValueError('Invalid project request')
+        path = Path(__file__).resolve().parents[2] / 'deploy' / 'project-store.py'
+        spec = importlib.util.spec_from_file_location('v2_existing_projects', path)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        reader = LegacyProjectReader(module, root=config['root'], base_path=config['basePath'])
+        result = reader.inspect(user_id=request['accountId'], project=request['project'], release=request['release'])
+        print(json.dumps({'result': {'accountId': request['accountId'], **result}}))
+        return 0
+    except Exception:
+        print(json.dumps({'error': {'code': 'PROJECT_SOURCE_UNAVAILABLE'}}))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
