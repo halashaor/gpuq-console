@@ -26,8 +26,9 @@ def priority(value):
 def evaluate(operation, args):
     if operation == 'resources':
         raw = args['request']
+        inventory = args['managed_gpu_uuids']
         validated = validate_resource_request(raw, count(args['pool_size'], 'pool_size', 1),
-                                              managed_gpu_uuids=tuple(args['managed_gpu_uuids']))
+                                              managed_gpu_uuids=None if inventory is None else tuple(inventory))
         resource = validated['submission']
         runtime = validate_runtime_environment(raw, resource['share_gpu'])
         resource['yield_policy'] = validate_yield_policy(raw.get('yield_policy', 'legacy'), resource['checkpoint_capability'], resource['share_gpu'])

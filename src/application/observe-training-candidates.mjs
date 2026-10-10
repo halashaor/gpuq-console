@@ -3,7 +3,9 @@ import {requireProjectObservation, requireProjectRuntimeObservation} from '../do
 
 /** Existing project/runtime references, not execution admission or GPU reservations. */
 export class ObserveTrainingCandidates {
-  constructor({catalog, projects, data, clock = Date.now}) {this.catalog = catalog; this.projects = projects; this.data = data; this.clock = clock;}
+  constructor({catalog, projects, data, resources, clock = Date.now}) {
+    this.catalog = catalog; this.projects = projects; this.data = data; this.resources = resources; this.clock = clock;
+  }
   async execute(actor, request) {
     const snapshot = await this.catalog.snapshot(actor, request, this.clock());
     const unchanged = async () => {
@@ -11,9 +13,19 @@ export class ObserveTrainingCandidates {
       if (JSON.stringify(current) !== JSON.stringify(snapshot)) throw new ApplicationError('TRAINING_CONTEXT_CHANGED');
     };
     const candidates = [], excluded = [...snapshot.excluded];
+    let resourceRequest;
+    try {resourceRequest = await this.resources.validate(request);}
+    finally {await unchanged();}
     for (const candidate of snapshot.candidates) {
       const instance = snapshot.instances.find(row => row.machineId === candidate.machineId);
       if (!instance) {excluded.push({machineId: candidate.machineId, reason: 'instance-not-registered'}); continue;}
+      let resourceFit;
+      try {resourceFit = await this.resources.execute(resourceRequest, candidate);}
+      catch (error) {
+        if (!['GPU_POOL_UNAVAILABLE', 'GPU_POOL_NODE_MISMATCH'].includes(error.code)) throw error;
+        excluded.push({machineId: candidate.machineId, reason: 'resource-unavailable'}); continue;
+      } finally {await unchanged();}
+      if (!resourceFit.eligible) {excluded.push({machineId: candidate.machineId, reason: resourceFit.reason}); continue;}
       const reference = {machineId: candidate.machineId, project: instance.project, release: request.project.release};
       let observation;
       try {
@@ -59,7 +71,7 @@ export class ObserveTrainingCandidates {
         continue;
       } finally {await unchanged();}
       candidates.push({...candidate, ...instance, environmentMode: runtime.environmentMode,
-        runtimeIdentityVerified: true, runtime: {...runtime.runtime}, dataReads: reads});
+        runtimeIdentityVerified: true, runtime: {...runtime.runtime}, dataReads: reads, resourceFit});
     }
     for (const candidate of candidates) {
       await this.data.requireAccess(actor, {machineId: candidate.machineId, sources: request.dataSources});

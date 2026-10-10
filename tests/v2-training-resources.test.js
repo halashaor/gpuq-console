@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ValidateTrainingResources} from '../src/application/validate-training-resources.mjs';
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
+import {ObserveTrainingResources} from '../src/application/observe-training-resources.mjs';
 
 const admission = new ValidateTrainingResources({policy: new GpuqPolicy({python: process.env.V2_PYTHON || 'python3'})});
 const pool = {gpuUuids: Array.from({length: 8}, (_, index) => 'GPU-' + index)};
@@ -63,4 +64,47 @@ test('invalid inventory is not interpreted as capacity and empty inventory is ex
   await assert.rejects(admission.execute(submission(), {gpuUuids: ['GPU-1', 'GPU-1']}), error => error.code === 'GPU_INVENTORY_INVALID');
   await assert.rejects(admission.execute(submission(), {gpuUuids: []}), error => error.code === 'GPU_POOL_EMPTY');
   await assert.rejects(admission.execute(submission(), {gpuUuids: ['GPU-1']}), invalid);
+});
+
+test('elastic intent keeps its original bounds while legal counts fit a smaller node and configured quota', async () => {
+  const input = submission(), before = structuredClone(input);
+  const observer = new ObserveTrainingResources({validator: admission, pools: {async inspect() {
+    return {machineId: 'small', gpuUuids: pool.gpuUuids.slice(0, 6), freeGpuUuids: pool.gpuUuids.slice(0, 5), dispatchEnabled: true};
+  }}});
+  const validated = await observer.validate(input);
+  assert.deepEqual(validated.allowedGpuCounts, [4, 8]);
+  const fit = await observer.execute(validated, {machineId: 'small', maxConfiguredGpus: 6});
+  assert.equal(fit.eligible, true);
+  assert.deepEqual(fit.allowedGpuCounts, [4]);
+  assert.equal(fit.exclusiveFreeFitGpuCount, 4);
+  assert.deepEqual(input, before);
+  assert.equal(validated.resources.gpu_count, 8);
+  assert.equal((await observer.execute(validated, {machineId: 'small', maxConfiguredGpus: 3})).reason, 'resource-capacity-too-small');
+});
+
+test('a busy or gated capable pool remains eligible to wait, without claiming preemption or launch', async () => {
+  const observed = {machineId: 'node', ...pool, freeGpuUuids: [], dispatchEnabled: true};
+  const observer = new ObserveTrainingResources({validator: admission, pools: {async inspect() {return observed;}}});
+  const input = submission(); input.scheduling.mode = 'preempt-save';
+  const validated = await observer.validate(input), candidate = {machineId: 'node', maxConfiguredGpus: 8};
+  const busy = await observer.execute(validated, candidate);
+  assert.equal(busy.eligible, true); assert.equal(busy.exclusiveFreeFitGpuCount, null); assert.equal(busy.waitingFor, 'free-capacity');
+  observed.dispatchEnabled = false;
+  assert.equal((await observer.execute(validated, candidate)).waitingFor, 'dispatch-disabled');
+});
+
+test('pinned UUIDs must be managed and free on this node, while sharing needs its own admission', async () => {
+  const observed = {machineId: 'node', ...pool, freeGpuUuids: ['GPU-2'], dispatchEnabled: true};
+  const observer = new ObserveTrainingResources({validator: admission, pools: {async inspect() {return observed;}}});
+  const input = submission();
+  input.resources = {minGpus: 1, maxGpus: 1, elastic: false, autoScaleUp: false, placement: 'pinned', gpuUuids: ['GPU-1'], batch: null, sharing: null};
+  const candidate = {machineId: 'node', maxConfiguredGpus: 8};
+  assert.equal((await observer.execute(await observer.validate(input), candidate)).exclusiveFreeFitGpuCount, null);
+  input.resources.gpuUuids = ['GPU-outside'];
+  assert.equal((await observer.execute(await observer.validate(input), candidate)).reason, 'required-gpus-not-managed');
+  input.resources.gpuUuids = ['GPU-1']; input.resources.sharing = {vramMiB: 512, hami: null};
+  input.scheduling = {priority: 1, mode: 'queue', yieldPolicy: 'never', checkpoint: 'none', restart: 'never'};
+  const shared = await observer.execute(await observer.validate(input), candidate);
+  assert.equal(shared.eligible, true); assert.equal(shared.waitingFor, 'sharing-admission');
+  assert.equal(shared.exclusiveFreeFitGpuCount, null);
 });

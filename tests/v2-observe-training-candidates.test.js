@@ -41,8 +41,9 @@ async function fixture(t) {
     },
   };
   const data = new ResolveTrainingData({access: {async requireRead() {}}, sources: {async inspect() {return {availability: 'available'};}}});
-  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data});
-  return {...f, actor, observations, calls, runtimeCalls, projects, data, app};
+  const resources = {async validate() {return {};}, async execute() {return {eligible: true};}};
+  const app = new ObserveTrainingCandidates({catalog: new SqliteTrainingCatalog({database: f.database}), projects, data, resources});
+  return {...f, actor, observations, calls, runtimeCalls, projects, data, resources, app};
 }
 
 test('only exact registered active instances and runtime references survive without claiming GPU readiness', async t => {
@@ -170,4 +171,26 @@ test('a node-local data grant is not required on every otherwise eligible machin
   assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
   assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'data-not-authorized'}]);
   assert.deepEqual(reads, ['node-2']);
+});
+
+test('pool failure excludes one node before project queries and preserves the next candidate', async t => {
+  const f = await fixture(t);
+  f.resources.execute = async (_validated, candidate) => {
+    if (candidate.machineId === 'node-1') throw new ApplicationError('GPU_POOL_UNAVAILABLE');
+    return {eligible: true, exclusiveFreeFitGpuCount: null, waitingFor: 'free-capacity'};
+  };
+  const result = await f.app.execute(f.actor, request);
+  assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'resource-unavailable'}]);
+  assert.deepEqual(f.calls, ['node-2']);
+  assert.equal(result.candidates[0].resourceFit.waitingFor, 'free-capacity');
+});
+
+test('machine access revoked during a pool query prevents subsequent project inspection', async t => {
+  const f = await fixture(t);
+  f.resources.execute = async () => {
+    f.database.exec("DELETE FROM v2_machine_grants WHERE machine_id='node-1'");
+    return {eligible: true};
+  };
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('TRAINING_CONTEXT_CHANGED'));
+  assert.deepEqual(f.calls, []);
 });
