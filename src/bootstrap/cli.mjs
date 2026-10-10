@@ -6,6 +6,7 @@ import {DataClient} from '../client/data-client.mjs';
 import {AccountClient} from '../client/account-client.mjs';
 import {DirectoryClient} from '../client/directory-client.mjs';
 import {DataAccessImportClient} from '../client/data-access-import-client.mjs';
+import {ProjectClient} from '../client/project-client.mjs';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
@@ -13,6 +14,8 @@ const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
+  --url ORIGIN --credentials FILE register-project --project-id ID --machine ID --project SLUG --release SHA256
+  --url ORIGIN --credentials FILE project-registration --project-id ID --machine ID --project SLUG --release SHA256
   --url ORIGIN --credentials FILE access-import-plan --resource ID
   --url ORIGIN --credentials FILE access-import --resource ID --plan SHA256 --request UUID
   --url ORIGIN --credentials FILE access-import-status --request UUID
@@ -41,6 +44,7 @@ export async function runCli({argv, stdin, stdout}) {
     dataset: {type: 'string'}, version: {type: 'string'},
     after: {type: 'string'}, limit: {type: 'string'},
     resource: {type: 'string'}, plan: {type: 'string'}, request: {type: 'string'},
+    'project-id': {type: 'string'}, project: {type: 'string'}, release: {type: 'string'},
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
@@ -50,10 +54,13 @@ export async function runCli({argv, stdin, stdout}) {
   }
   // Validate destination before opening a local credential file.
   const transport = new JsonHttpTransport({baseUrl: values.url});
+  const projectReference = () => ({projectId: values['project-id'], machineId: values.machine, project: values.project, release: values.release});
   const actions = {
     current: ({identity, expiry}) => ({...identity, ...expiry}),
     accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
     'register-directory': () => new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source}),
+    'register-project': () => new ProjectClient({transport}).registerRelease(projectReference()),
+    'project-registration': () => new ProjectClient({transport}).registration(projectReference()),
     'access-import-plan': () => new DataAccessImportClient({transport}).plan({resourceId: values.resource}),
     'access-import': () => new DataAccessImportClient({transport}).apply({resourceId: values.resource, planId: values.plan, requestId: values.request}),
     'access-import-status': () => new DataAccessImportClient({transport}).receipt({requestId: values.request}),

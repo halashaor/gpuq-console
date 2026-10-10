@@ -26,6 +26,22 @@ export class SqliteProjectRegistrations {
   authorize(actor, request, now) {
     return readTransaction(this.database, () => this.#authorize(actor, request, now));
   }
+  get(actor, request, now) {
+    const db = this.database;
+    return readTransaction(db, () => {
+      requireActiveSession(this.sessions.findByActor(actor), now);
+      const project = db.prepare('SELECT owner_id FROM v2_projects WHERE id=?').get(request.projectId);
+      if (!project) return null;
+      if (project.owner_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+      const row = db.prepare(`SELECT i.* FROM v2_project_instances i JOIN v2_release_locations l
+        ON l.project_id=i.project_id AND l.machine_id=i.machine_id
+        WHERE i.project_id=? AND i.machine_id=? AND l.release=?`).get(request.projectId, request.machineId, request.release);
+      if (!row) return null;
+      if (row.project_slug !== request.project) throw new ApplicationError('PROJECT_INSTANCE_CONFLICT');
+      return {projectId: request.projectId, machineId: request.machineId, release: request.release,
+        projectUUID: row.project_uuid, generation: row.generation, registered: true, runtimeVerified: false};
+    });
+  }
   register(actor, request, observed, now) {
     const db = this.database;
     return transaction(db, () => {

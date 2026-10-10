@@ -35,9 +35,10 @@
 - `application/validate-training-resources.mjs`：将 V2 意图与可信节点池送到 GPUQ 原生纯资源校验。原 GPUQ 完整提交复用同一资源／环境函数，继续独立验证真实 cwd、可执行文件和 RPC 大小；该校验不占卡，也不代替项目、权限、配额或运行库检查。
 - `domain/training-candidates.mjs` 与 `sqlite/training-catalog.mjs`：检查项目归属、归档、release 登记和机器授权，输出目录级候选及配置额度上界，不猜测空闲卡或节点文件就绪。正式项目登记、物理实例观察和实际用量检查尚待接入。
 - `infrastructure/legacy-project-reader.py`：以无初始化方式读取已有项目 UUID、实例代次和固定 release 元数据；不创建生命周期目录／锁或验证运行环境，runtimeVerified 明确为 false。原生观察已测试，节点协议与项目登记事务尚待接入。
-- `application/register-project-release.mjs` 与 `sqlite/project-registrations.mjs`：将账号／机器绑定的观察原子登记到项目目录，UUID 与 generation 防止静默换实例；重复登记不会产生第二个绑定。已通过隔离 HTTP 节点连接原生 reader，公开 API 尚未完成，仍不代表可启动。
+- `application/register-project-release.mjs` 与 `sqlite/project-registrations.mjs`：将账号／机器绑定的观察原子登记到项目目录，UUID 与 generation 防止静默换实例；重复登记不会产生第二个绑定。已通过隔离 HTTP 节点连接原生 reader，仍不代表可启动。
 - `ProjectMetadataReader` 与 `contracts/project-inspection.mjs`：固定子进程观察真实项目，缺失基础环境不妨碍元数据读取，也不自动恢复它；不返回宿主路径或冒称 runtimeVerified。`jsonProcess` 共用有界、无 shell 的原生 JSON 通信。
 - `HttpProjectReader`／`assembleProjectInspection`：项目远端观察复用数据来源的 `NodeJsonTransport` 和节点认证，绑定账号／机器／版本。只完成隔离 HTTP 验证，实际节点部署与运行环境检查仍待接。
+- `ProjectClient`／`assembleSqliteProjectRegistration`：网页和 CLI 共用项目登记与存量查询。CLI `register-project`、`project-registration` 参数见 `--help`，重试保留同一逻辑 ID 和引用；查询不联系节点、不提供新的运行证明，亦不启动训练。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
