@@ -10,10 +10,11 @@ test('only authenticated admission status JSON carries a typed absence proof; ga
   ['datasets.upload.admission.status',503,JSON.stringify({error:'unknown',code:'DATASET_ADMISSION_ABSENT'}),false],
   ['datasets.upload.admission.status',404,'<html>Not found</html>',false]
  ]){
-  let calls=0;await assert.rejects(apiPost(url,'call',{operation,args:{}},{token:'fixture-token',fetchImpl:async()=>{
+  let calls=0;const delays=[];await assert.rejects(apiPost(url,'call',{operation,args:{}},{token:'fixture-token',sleep:async ms=>{delays.push(ms);},fetchImpl:async()=>{
    calls++;return new Response(body,{status});
   }}),error=>error.status===status&&(error.code==='DATASET_ADMISSION_ABSENT')===expected);
-  assert.equal(calls,1);
+  assert.equal(calls,status===503?8:1);
+  assert.deepEqual(delays,status===503?[500,1000,2000,4000,8000,16000,32000]:[]);
  }
 });
 test('browser transport preserves absence only for the matching status operation and exact HTTP/code tuple',async t=>{
