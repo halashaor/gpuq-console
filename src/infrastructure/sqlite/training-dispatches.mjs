@@ -10,12 +10,17 @@ import {requireTaskPlacement} from '../../domain/task-placement.mjs';
 export function createTrainingDispatchSchema(database) {
   transaction(database, () => database.exec(`CREATE TABLE v2_training_dispatches (
     dispatch_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE REFERENCES v2_compute_claims(job_id),
-    state TEXT NOT NULL CHECK(state='PREPARED'), created_at_ms INTEGER NOT NULL
+    state TEXT NOT NULL CHECK(state IN ('PREPARED','SENDING','UNKNOWN','ACCEPTED')), created_at_ms INTEGER NOT NULL,
+    sender_token TEXT, send_started_at_ms INTEGER, node_job_id TEXT,
+    CHECK((state='PREPARED' AND sender_token IS NULL AND send_started_at_ms IS NULL AND node_job_id IS NULL)
+      OR (state IN ('SENDING','UNKNOWN') AND sender_token IS NOT NULL AND send_started_at_ms IS NOT NULL AND node_job_id IS NULL)
+      OR (state='ACCEPTED' AND sender_token IS NOT NULL AND send_started_at_ms IS NOT NULL AND node_job_id IS NOT NULL))
   )`));
 }
 
 const receipt = row => ({dispatchId: row.dispatch_id, jobId: row.job_id, machineId: row.machine_id,
-  gpuCount: row.gpu_count, state: row.state, createdAtMs: row.created_at_ms});
+  gpuCount: row.gpu_count, state: row.state, createdAtMs: row.created_at_ms,
+  sendStartedAtMs: row.send_started_at_ms, nodeJobId: row.node_job_id});
 
 /** Durable dispatch intent only: no network, GPU lease, worker or user code. */
 export class SqliteTrainingDispatches {
@@ -62,7 +67,7 @@ export class SqliteTrainingDispatches {
       }
       const claim = reserve();
       if (claim.state !== 'HELD') throw new ApplicationError('COMPUTE_CLAIM_NOT_HELD');
-      this.database.prepare("INSERT INTO v2_training_dispatches VALUES(?,?,'PREPARED',?)")
+      this.database.prepare("INSERT INTO v2_training_dispatches(dispatch_id,job_id,state,created_at_ms) VALUES(?,?,'PREPARED',?)")
         .run(randomUUID(), command.jobId, now);
       return receipt(this.#find(command.jobId));
   }
@@ -72,6 +77,41 @@ export class SqliteTrainingDispatches {
       new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
       const row = this.#find(jobId);
       return row ? receipt(row) : null;
+    });
+  }
+
+  /** A durable single send permit; repeat callers may only inspect the original attempt. */
+  beginSend(jobId, now) {
+    return transaction(this.database, () => {
+      new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+      const row = this.#find(jobId);
+      if (!row) throw new ApplicationError('TRAINING_DISPATCH_NOT_PREPARED');
+      if (row.state !== 'PREPARED') return {acquired: false, dispatch: receipt(row)};
+      const claim = this.claims.claimTaskWithinTransaction(jobId, {machineId: row.machine_id, gpuCount: row.gpu_count}, now);
+      if (claim.state !== 'HELD') throw new ApplicationError('COMPUTE_CLAIM_NOT_HELD');
+      const senderToken = randomUUID();
+      this.database.prepare("UPDATE v2_training_dispatches SET state='SENDING',sender_token=?,send_started_at_ms=? WHERE dispatch_id=?")
+        .run(senderToken, now, row.dispatch_id);
+      return {acquired: true, senderToken, dispatch: receipt(this.#find(jobId))};
+    });
+  }
+
+  /** Internal evidence write, permitted after account revocation; never authorizes another send. */
+  recordSendOutcome({dispatchId, senderToken, nodeJobId}) {
+    if (nodeJobId !== null && (typeof nodeJobId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(nodeJobId))) {
+      throw new ApplicationError('INVALID_DISPATCH_OUTCOME');
+    }
+    return transaction(this.database, () => {
+      const row = this.database.prepare(`SELECT d.*,c.machine_id,c.gpu_count FROM v2_training_dispatches d
+        JOIN v2_compute_claims c ON c.job_id=d.job_id WHERE d.dispatch_id=?`).get(dispatchId);
+      if (!row || !row.sender_token || row.sender_token !== senderToken) throw new ApplicationError('DISPATCH_SEND_CONFLICT');
+      if (row.state === 'ACCEPTED') {
+        if (nodeJobId !== null && nodeJobId !== row.node_job_id) throw new ApplicationError('DISPATCH_OUTCOME_CONFLICT');
+        return receipt(row);
+      }
+      this.database.prepare('UPDATE v2_training_dispatches SET state=?,node_job_id=? WHERE dispatch_id=?')
+        .run(nodeJobId === null ? 'UNKNOWN' : 'ACCEPTED', nodeJobId, dispatchId);
+      return receipt(this.#find(row.job_id));
     });
   }
 
