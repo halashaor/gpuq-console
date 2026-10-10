@@ -3,7 +3,7 @@ import {ApplicationError} from '../domain/errors.mjs';
 /** Bounded authenticated node RPC. No redirect, discovery, retry or failover. */
 export class NodeJsonTransport {
   #nodes = new Map();
-  constructor({nodes, fetch = globalThis.fetch, timeoutMs = 5000}) {
+  constructor({nodes, fetch = globalThis.fetch, timeoutMs = 5000, maxResponseBytes = 8192}) {
     for (const {machineId, origin, credential} of nodes) {
       const url = new URL(origin);
       if (url.origin !== origin || (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === '127.0.0.1'))
@@ -13,7 +13,8 @@ export class NodeJsonTransport {
       this.#nodes.set(machineId, {origin, credential});
     }
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('Invalid node timeout');
-    this.fetch = fetch; this.timeoutMs = timeoutMs;
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 2 * 1024 * 1024) throw new TypeError('Invalid node response limit');
+    this.fetch = fetch; this.timeoutMs = timeoutMs; this.maxResponseBytes = maxResponseBytes;
   }
 
   async request(machineId, route, input) {
@@ -34,7 +35,7 @@ export class NodeJsonTransport {
       const chunks = [];
       for await (const chunk of response.body) {
         size += chunk.byteLength;
-        if (size > 8192) throw new Error('Node response too large');
+        if (size > this.maxResponseBytes) throw new Error('Node response too large');
         chunks.push(chunk);
       }
       signal.throwIfAborted();
