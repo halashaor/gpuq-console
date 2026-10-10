@@ -1,4 +1,4 @@
-import {requireActiveSession} from '../domain/read-access.mjs';
+import {requireActiveSession} from '../domain/session-policy.mjs';
 
 export class AuthenticateSession{
   constructor({sessions,clock=Date.now}){this.sessions=sessions;this.clock=clock;}

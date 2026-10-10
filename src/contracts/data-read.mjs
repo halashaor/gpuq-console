@@ -1,12 +1,7 @@
 export const DATA_READ_ROUTE='/api/v2/data/read-location';
 
-export class InvalidRequest extends Error{
-  constructor(field){super('INVALID_REQUEST');this.code='INVALID_REQUEST';this.field=field;}
-}
-
-export class InvalidResponse extends Error{
-  constructor(){super('INVALID_API_RESPONSE');this.code='INVALID_API_RESPONSE';}
-}
+import {InvalidRequest, InvalidResponse} from './errors.mjs';
+export {InvalidRequest, InvalidResponse} from './errors.mjs';
 
 const identifier=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const version=/^[a-f0-9]{64}$/;

@@ -1,9 +1,6 @@
 import {ApplicationError} from './errors.mjs';
 
-export function requireActiveSession(session,nowMs){
-  if(!session||!session.accountEnabled||session.revoked||session.expiresAtMs<=nowMs
-    ||session.accountRevision!==session.sessionRevision)throw new ApplicationError('UNAUTHENTICATED');
-}
+import {requireActiveSession} from './session-policy.mjs';
 
 export function requireDataReadPermission(actor,facts,nowMs){
   requireActiveSession(facts?.session,nowMs);

@@ -13,7 +13,7 @@ import {Pbkdf2Passwords} from '../src/infrastructure/passwords.mjs';
 import {SessionTokens} from '../src/infrastructure/session-tokens.mjs';
 import {createReadSchema} from '../src/infrastructure/sqlite/read-schema.mjs';
 import {createLoginSchema} from '../src/infrastructure/sqlite/login-schema.mjs';
-import {SqliteSessionReader} from '../src/infrastructure/sqlite/data-read-repositories.mjs';
+import {SqliteSessionReader} from '../src/infrastructure/sqlite/session-reader.mjs';
 import {SqliteLoginAccounts, SqliteLoginAttempts, SqliteLoginSessions} from '../src/infrastructure/sqlite/login-repositories.mjs';
 
 async function fixture(t, passwords = {verify: async password => password === 'correct'}) {
