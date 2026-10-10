@@ -8,7 +8,7 @@
 
 ## CLI
 
-Linux／WSL 上从本站单独安装，不替换原来的 `gpuctl`：
+Linux 上从本站单独安装，不替换原来的 `gpuctl`：
 
 ```sh
 curl -fsS https://你的平台域名/__preview__/install.sh | sh
@@ -17,6 +17,8 @@ curl -fsS https://你的平台域名/__preview__/install.sh | sh
 ~/.local/bin/gpuctl-preview preview off
 ```
 
-沿用本人已有登录和项目选择。没有登录时先运行 `gpuctl-preview login`；加入灰度必须由服务器确认授权，失败不会改变本地选择。`preview status` 查看该客户端选择。`off` 不依赖灰度服务在线，不取消、重提或迁移任务。Windows 原生自动安装尚未提供；可先用网页或 WSL。
+沿用本人已有登录和项目选择。没有登录时先运行 `gpuctl-preview login`；加入灰度必须由服务器确认授权，失败不会改变本地选择。`preview status` 查看该客户端选择。`off` 不依赖灰度服务在线，不取消、重提或迁移任务。
+
+Linux 已完成真实账号开启、任务查询和退出验收。Windows／WSL 的灰度路径协议测试通过，但本轮 WSL 实际控制链路仍超时，尚未验收通过；这类客户端先使用网页，不反复提交训练。Windows 原生自动安装尚未提供。
 
 第一阶段灰测网页与 CLI，后端任务状态和资源分配仍共用现役控制端。不能据此认定新的后端或节点运行器已经上线。普通稳定版 CLI 保持原版本和行为。

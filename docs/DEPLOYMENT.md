@@ -312,6 +312,12 @@ npm test
 
 ## 10. 常见阻塞
 
+### 可选真实灰度入口
+
+`deploy/Dockerfile.preview` 从已核对的稳定镜像构建独立入口，启动 `preview-server.mjs`。必须显式设置内部 `PREVIEW_UPSTREAM`、规范公网 `PUBLIC_ORIGIN`、测试账号 ID 数组 `PREVIEW_USERS` 和 `PREVIEW_REVISION`。仅接管同站点 `/__preview__/*`，普通路径保持原路由；新增容器不挂生产数据库、执行桥、宿主 Docker socket 或密钥，不运行第二个状态写入者。
+
+新增路由前比较当前运行配置与持久配置，备份并验证只增加灰度路径。后续稳定版发布必须保留这一独立路由，不以旧配置覆盖。灰度容器单独限额，镜像与回退容器单独保留；关闭灰度不会取消已经提交给现役控制端的任务。名单变更与灰度更新只替换灰度容器，不重启稳定版或 GPUQ。使用及验收边界见 [真实灰度版](PREVIEW.md)。
+
 - 终端打不开：`bwrap --help` 是否支持 bind-fd、用户命名空间策略、slirp4netns、服务用户 linger、基础 Python 路径。
 - 单卡正常多卡失败：先查训练程序、驱动/框架兼容与 NCCL，不能通过给普通用户全宿主机权限绕过。
 - 日志/状态 UNKNOWN：保留额度，查节点 SSH 和 GPUQ；不要手工清空预留。
