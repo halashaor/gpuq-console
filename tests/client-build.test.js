@@ -45,7 +45,8 @@ test('runtime artifact reader needs neither source CLI modules nor installed esb
   const root=await mkdtemp(join(tmpdir(),'gpuq-client-runtime-'));t.after(()=>rm(root,{recursive:true,force:true}));await mkdir(join(root,'build'));
   await copyFile(new URL('../client-bundle.mjs',import.meta.url),join(root,'client-bundle.mjs'));
   await copyFile(new URL('../build/gpuctl.mjs',import.meta.url),join(root,'build/gpuctl.mjs'));
-  const output=spawnSync(process.execPath,['--input-type=module','-e',"import {standaloneClient} from './client-bundle.mjs'; process.stdout.write(await standaloneClient('https://runtime.example'));"],{cwd:root,encoding:'utf8'});
+  const output=spawnSync(process.execPath,['--input-type=module','-e',"import {standaloneClient} from './client-bundle.mjs'; process.stdout.write(await standaloneClient('https://runtime.example'));"],{cwd:root,encoding:'utf8',maxBuffer:64*1024*1024});
+  assert.equal(output.error,undefined,'native helper bundle must fit the supported 64 MiB client download bound');
   assert.equal(output.status,0,output.stderr);assert.match(output.stdout,/https:\/\/runtime\.example/);assert.doesNotMatch(output.stdout,/__GPUQ_PUBLIC_ORIGIN__/);
 });
 

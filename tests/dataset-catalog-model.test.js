@@ -77,8 +77,10 @@ test('a selected READY claim without that node\'s READY physical cache stays unk
   assert.equal(one(input).selected.state,'UNKNOWN');
 });
 
-test('preserved warehouse original requires same immutable version, ARCHIVED, retained and a destination',()=>{
-  assert.equal(one(catalog()).warehouse.state,'saved');assert.equal(one(catalog()).warehouse.originalConfirmed,true);
+test('archive history alone does not prove a current readable warehouse copy',()=>{
+  assert.equal(one(catalog()).warehouse.state,'unknown');assert.equal(one(catalog()).warehouse.originalConfirmed,false);
+  const ready=catalog();ready.datasets[0].versions[0].locations[0].warehouseReady=true;
+  assert.equal(one(ready).warehouse.state,'saved');assert.equal(one(ready).warehouse.originalConfirmed,true);
   for(const change of [{version:other},{originalRetained:false},{archiveMachine:null},{archiveMachine:''},{dataset:''},{phase:'FUTURE'},{phase:'BLOCKED'}]){
     const input=catalog();input.datasets[0].versions[0].locations[0].storage=storage(change);
     assert.equal(one(input).warehouse.state,'unknown',JSON.stringify(change));assert.equal(one(input).warehouse.originalConfirmed,false);
@@ -139,7 +141,7 @@ test('browse-only catalog keeps server facts without a selected training target 
   const result=aggregateDatasetCatalog(input),v=result.datasets[0].versions[0];
   assert.equal(result.machine,null);assert.equal(v.selected.machine,null);
   assert.equal(v.selected.state,'UNKNOWN');assert.equal(v.selected.canPrepare,false);
-  assert.equal(v.servers[0].state,'READY');assert.equal(v.warehouse.originalConfirmed,true);
+  assert.equal(v.servers[0].state,'READY');assert.equal(v.warehouse.originalConfirmed,false,'cache READY and archive history do not establish current warehouse readiness');
   assert.equal(result.machines.length,input.machines.length);
   const invalid={...input};delete invalid.machine;assert.throws(()=>aggregateDatasetCatalog(invalid),TypeError);
 });
