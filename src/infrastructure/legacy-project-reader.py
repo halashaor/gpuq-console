@@ -27,18 +27,22 @@ def main():
         if len(raw) > 8192:
             raise ValueError('Project request too large')
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {'config', 'request'}:
+        if not isinstance(value, dict) or set(value) != {'operation', 'config', 'request'}:
             raise ValueError('Invalid project envelope')
+        if value['operation'] not in ('inspect', 'runtime'):
+            raise ValueError('Invalid project operation')
         config, request = value['config'], value['request']
-        if not isinstance(config, dict) or set(config) != {'root', 'basePath'}:
+        if not isinstance(config, dict) or set(config) != {'root', 'basePath', 'runtimeConfig'} or not isinstance(config['runtimeConfig'], dict):
             raise ValueError('Invalid project configuration')
         if not isinstance(request, dict) or set(request) != {'accountId', 'project', 'release'}:
             raise ValueError('Invalid project request')
         path = Path(__file__).resolve().parents[2] / 'deploy' / 'project-store.py'
         spec = importlib.util.spec_from_file_location('v2_existing_projects', path)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        reader = LegacyProjectReader(module, root=config['root'], base_path=config['basePath'])
-        result = reader.inspect(user_id=request['accountId'], project=request['project'], release=request['release'])
+        reader = LegacyProjectReader(module, root=config['root'], base_path=config['basePath'],
+                                     config={**config['runtimeConfig'], 'root': config['root']})
+        observe = reader.inspect if value['operation'] == 'inspect' else reader.verify_runtime
+        result = observe(user_id=request['accountId'], project=request['project'], release=request['release'])
         print(json.dumps({'result': {'accountId': request['accountId'], **result}}))
         return 0
     except Exception:

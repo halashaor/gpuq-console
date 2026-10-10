@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {mkdtemp, readdir, chmod, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {ProjectMetadataReader} from '../../src/infrastructure/project-metadata-reader.mjs';
+import {ExistingProjectReader} from '../../src/infrastructure/existing-project-reader.mjs';
 
 const run = promisify(execFile);
 export const python = process.env.V2_PYTHON || 'python3';
@@ -20,5 +20,5 @@ export async function projectFixture(t) {
   const {stdout} = await run(python, ['-B', fileURLToPath(new URL('./v2-project-fixture.py', import.meta.url)), directory]);
   const config = JSON.parse(stdout);
   return {...config, directory, request: {machineId: 'node-1', project: 'training', release: config.release},
-    reader: new ProjectMetadataReader({machineId: 'node-1', ...config, python})};
+    reader: new ExistingProjectReader({machineId: 'node-1', ...config, python})};
 }

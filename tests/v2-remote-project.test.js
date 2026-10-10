@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import {rename, stat, writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
 import {projectFixture, python} from './helpers/v2-project-fixture.mjs';
 import {sessionFixture, loginRequest} from './helpers/v2-session-fixture.mjs';
 import {assembleProjectInspection} from '../src/bootstrap/project-inspection.mjs';
 import {HttpProjectReader} from '../src/infrastructure/http-project-reader.mjs';
 import {NodeJsonTransport} from '../src/infrastructure/node-json-transport.mjs';
-import {PROJECT_INSPECTION_ROUTE} from '../src/contracts/project-inspection.mjs';
+import {PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE, parseProjectRuntimeObservation} from '../src/contracts/project-inspection.mjs';
 import {RegisterProjectRelease} from '../src/application/register-project-release.mjs';
 import {createTrainingCatalogSchema, SqliteTrainingCatalog} from '../src/infrastructure/sqlite/training-catalog.mjs';
 import {ObserveTrainingCandidates} from '../src/application/observe-training-candidates.mjs';
@@ -75,4 +77,57 @@ test('shared node transport never forwards credentials to a different origin or 
   }
   assert.equal(calls, 0);
   assert.throws(() => new NodeJsonTransport({nodes: [{machineId: 'node-1', origin: 'https://node.example', credential: [credential]}]}), /Invalid/);
+});
+
+test('runtime identity uses the real node/native chain without executing the synthetic interpreter', async t => {
+  const p = await projectFixture(t);
+  const origin = await serve(t, assembleProjectInspection({machineId: 'node-1', credential, root: p.root, basePath: p.basePath, python, reportError() {}}));
+  const projects = new HttpProjectReader({nodes: [{machineId: 'node-1', origin, credential}]});
+  const metadata = await projects.inspect(p.request, context);
+  const runtime = await projects.verifyRuntime(p.request, context);
+  assert.deepEqual(runtime, await p.reader.verifyRuntime(p.request, context));
+  assert.equal(runtime.projectUUID, metadata.projectUUID);
+  assert.equal(runtime.generation, metadata.generation);
+  assert.equal(runtime.runtimeIdentityVerified, true);
+  assert.equal(Object.hasOwn(runtime, 'runtimeVerified'), false);
+  assert.equal(runtime.runtime.kind, 'base');
+  assert.match(runtime.runtime.identity, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(runtime).includes(p.root), false);
+  await assert.rejects(projects.verifyRuntime(p.request, {actor: {id: 'bob'}}), hasCode('PROJECT_NODE_UNAVAILABLE'));
+  await rename(p.basePath, p.basePath + '-offline');
+  await assert.rejects(projects.verifyRuntime(p.request, context), hasCode('PROJECT_NODE_UNAVAILABLE'));
+  assert.equal((await projects.inspect(p.request, context)).runtimeVerified, false);
+  await assert.rejects(stat(p.basePath), {code: 'ENOENT'});
+  await rename(p.basePath + '-offline', p.basePath);
+  assert.deepEqual(await projects.verifyRuntime(p.request, context), runtime);
+  await writeFile(join(p.basePath, 'bin/python3.12'), 'changed fixture interpreter');
+  await assert.rejects(projects.verifyRuntime(p.request, context), hasCode('PROJECT_NODE_UNAVAILABLE'));
+});
+
+test('runtime route shares node authentication and never accepts caller-supplied runtime configuration', async t => {
+  const p = await projectFixture(t);
+  const origin = await serve(t, assembleProjectInspection({machineId: 'node-1', credential, root: p.root, basePath: p.basePath, python, reportError() {}}));
+  const post = (body, token) => fetch(origin + PROJECT_RUNTIME_ROUTE, {method: 'POST', headers: {
+    'Content-Type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {}),
+  }, body: JSON.stringify(body)});
+  const input = {...p.request, accountId: 'alice'};
+  assert.equal((await post(input)).status, 401);
+  assert.equal((await post({...input, machineId: 'other'}, credential)).status, 409);
+  assert.equal((await post({...input, runtimeConfig: {root: '/private'}}, credential)).status, 400);
+});
+
+test('runtime replies reject metadata-only success, changed identity and inconsistent image claims', async t => {
+  const p = await projectFixture(t), result = await p.reader.verifyRuntime(p.request, context);
+  const metadata = await p.reader.inspect(p.request, context);
+  for (const bad of [metadata, {...result, runtimeIdentityVerified: false}, {...result, lifecycle: 'ARCHIVED'},
+    {...result, runtime: {kind: 'oci', identity: 'sha256:' + 'a'.repeat(64)}}, {...result, runtime: {...result.runtime, hostPath: '/private'}}]) {
+    assert.throws(() => parseProjectRuntimeObservation(bad), hasCode('INVALID_API_RESPONSE'));
+  }
+  const oci = {...result, environmentMode: 'oci', runtime: {kind: 'oci', identity: 'sha256:' + 'a'.repeat(64)}};
+  assert.deepEqual(parseProjectRuntimeObservation(oci), oci);
+  for (const bad of [metadata, {...result, accountId: 'bob'}, {...result, machineId: 'other'}, {...result, release: 'a'.repeat(64)}]) {
+    const origin = await serve(t, (req, res) => res.end(JSON.stringify({result: bad})));
+    const projects = new HttpProjectReader({nodes: [{machineId: 'node-1', origin, credential}]});
+    await assert.rejects(projects.verifyRuntime(p.request, context), hasCode('PROJECT_NODE_UNAVAILABLE'));
+  }
 });
