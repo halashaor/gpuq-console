@@ -30,7 +30,7 @@
 - `DataAccessImportClient` 与 `bootstrap/sqlite-data-access-import.mjs`：同一管理接口供网页／CLI 核对、确认和查询。独立 CLI 支持 `access-import-plan`、`access-import`、`access-import-status`（参数见 `--help`）；null 回执仅代表尚未观察到，保留原 UUID 查询，不换号重提。
 - `HttpSourceReader.exportAccess`：固定内部节点路由取得旧 ACL 快照，共用有界读取与独立协调器凭据，保留旧所有者检查。导入 API／浏览器／CLI 已通过隔离远端 HTTP 场景，真实服务器部署和正式切换仍待完成。
 - `infrastructure/gpuq-policy.mjs`／`.py`：调用现役 GPUQ 纯策略计算排序、合法弹性 batch、扩容目标和抢占候选，不创建任务或执行动作。部署需保留 `gpuq/gpuq/` 模块目录；资源观察、配额、租约和执行适配尚待接入，计划不等于已经分配 GPU。
-- `domain/training-request.mjs` 与 `sqlite/training-requests.mjs`：内部准备载荷的规范化身份和持久日志，保存真实提交者及任务名；回执不含执行参数，重复请求不改写旧记录。RECORDED 不代表 GPUQ 已接受；公开提交接口与项目／资源准入未完成，不能让客户端直接提交 preparedSpec。
+- `domain/training-request.mjs` 与 `sqlite/training-requests.mjs`：直接保存共享 training-submission 契约，规范化任务名与描述并保存真实提交者；回执不含执行参数，内部 submission 按任务 ID 读取不可变原请求。旧通用 preparedSpec 载荷拒绝用于派发，不隐式转换。RECORDED 不代表 GPUQ 已接受；公开提交接口尚未完成。
 - `contracts/training-submission.mjs`：网页／CLI 共用训练输入结构，明确项目 release、容器命令、机器候选、资源与调度选项、逻辑数据来源。不接收宿主路径或执行身份；结构解析不代表项目存在、授权有效或 GPUQ 组合准入通过。
 - `application/validate-training-resources.mjs`：将 V2 意图与可信节点池送到 GPUQ 原生纯资源校验。原 GPUQ 完整提交复用同一资源／环境函数，继续独立验证真实 cwd、可执行文件和 RPC 大小；该校验不占卡，也不代替项目、权限、配额或运行库检查。
 - `domain/training-candidates.mjs` 与 `sqlite/training-catalog.mjs`：检查项目归属、归档、release 登记和机器授权，输出目录级候选及配置额度上界，不猜测空闲卡或节点文件就绪。正式项目登记、物理实例观察和实际用量检查尚待接入。
@@ -47,6 +47,7 @@
 - `SqliteComputeClaims`／`computeBalance`：独立用户额度账本，同事务核对当前权限／限额、统计 HELD 记录并预留额度；按任务幂等，不是 GPU 租约。新账本默认未就绪，旧占用导入和切换完成前不能新预留。没有超时返还、公共释放或启用接口，未接正式派发；原回执恢复不代表重新获得执行权限。
 - `trainingQuotaFit`：候选节点查询完成后，从同一读事务取得各机额度余额，与合法卡数求交集，返回 quotaFit。额度不足保留等待候选；未就绪／缺失余额不按无限额度处理。resourceFit 保留物理／配置观察，quotaFit 仍非派发许可，实际预留需使用原子 claim。
 - `SqliteTrainingDispatches`：同一写事务预留额度并记录每任务唯一 PREPARED 派发编号，失败一起回滚；通过原编号恢复，不自动换机。仅内部持久意图，不发送节点请求；额度原回执不能绕过当前授权来新建派发，PREPARED 也不是执行许可。任务原载荷仍由不可变输入记录持有。
+- `PrepareTrainingDispatch`：按任务 ID 读取统一原请求，观察候选，优先最大当前合法独占卡数，同卡数保持候选顺序；随后原子准备派发。没有适配或额度竞争返回 waiting，已存在／并发产生的派发恢复原编号，不重复观察或改投。waiting 是本次观察结果，不是持久队列终态；共享、抢占和实际节点执行仍待接。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

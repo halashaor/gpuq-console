@@ -8,11 +8,11 @@ import {sessionFixture, loginRequest} from './helpers/v2-session-fixture.mjs';
 import {SessionClient} from '../src/client/session-client.mjs';
 import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {SqliteTrainingRequests, createTrainingRequestSchema} from '../src/infrastructure/sqlite/training-requests.mjs';
+import {trainingSubmission} from './helpers/v2-training-submission.mjs';
 
 const hasCode = code => error => error.code === code;
-const request = () => ({requestId: randomUUID(), name: '分类实验', description: 'ImageNet 基线\n保持有效 batch',
-  preparedSpec: {projectId: 'project-1', releaseId: 'a'.repeat(64), argv: ['python', 'train.py'],
-    resources: {minGpus: 1, maxGpus: 4}, env: {SECRET_FOR_TEST: 'private-test-value'}}});
+const request = () => {const value = trainingSubmission(); return {...value, name: '分类实验', description: 'ImageNet 基线\n保持有效 batch',
+  execution: {...value.execution, env: {SECRET_FOR_TEST: 'private-test-value'}}};};
 async function fixture(t) {
   const f = await sessionFixture(); t.after(() => f.close());
   createTrainingRequestSchema(f.database);
@@ -36,9 +36,9 @@ test('records task labels and server-owned submitter identity without claiming G
 
 test('reordered object fields recover one request; changed commands or task metadata conflict', async t => {
   const f = await fixture(t), input = request(), first = f.store.record(f.actor, input, f.now);
-  const reordered = {...input, preparedSpec: {...input.preparedSpec, resources: {maxGpus: 4, minGpus: 1}}};
+  const reordered = {...input, resources: Object.fromEntries(Object.entries(input.resources).reverse())};
   assert.deepEqual(f.store.record(f.actor, reordered, f.now + 10), first);
-  for (const change of [{...input, name: '另一个实验'}, {...input, preparedSpec: {...input.preparedSpec, argv: ['train.py', 'python']}}]) {
+  for (const change of [{...input, name: '另一个实验'}, {...input, execution: {...input.execution, argv: ['train.py', 'python']}}]) {
     assert.throws(() => f.store.record(f.actor, change, f.now), hasCode('TRAINING_REQUEST_CONFLICT'));
   }
   assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_requests').get().n, 1);
@@ -59,9 +59,34 @@ test('another account cannot query or reuse a recorded request ID, and revoked s
   await new SessionClient({transport: new JsonHttpTransport({baseUrl: f.baseUrl}), delivery: 'token'}).login({...loginRequest, username: 'bob'});
   const bob = {id: 'bob', sessionId: f.database.prepare("SELECT id FROM v2_sessions WHERE account_id='bob'").get().id};
   assert.throws(() => f.store.get(bob, input.requestId, f.now), hasCode('FORBIDDEN'));
+  const jobId = f.store.get(f.actor, input.requestId, f.now).jobId;
+  assert.throws(() => f.store.submission(bob, jobId, f.now), hasCode('FORBIDDEN'));
   assert.throws(() => f.store.record(bob, input, f.now), hasCode('FORBIDDEN'));
   f.database.exec("UPDATE v2_accounts SET auth_revision=1 WHERE id='alice'");
   assert.throws(() => f.store.record(f.actor, request(), f.now), hasCode('UNAUTHENTICATED'));
+});
+
+test('dispatcher reads the same immutable structured submission without exposing it in receipts', async t => {
+  const f = await fixture(t), input = request();
+  input.name = '  分类实验  ';
+  input.dataSources = [{kind: 'warehouse', datasetId: 'imagenet', version: 'b'.repeat(64)}];
+  const stored = f.store.record(f.actor, input, f.now);
+  const expected = {...structuredClone(input), name: '分类实验'};
+  input.execution.argv.push('--changed'); input.dataSources.length = 0;
+  assert.deepEqual(f.store.submission(f.actor, stored.jobId, f.now), expected);
+  assert.equal(Object.hasOwn(stored, 'execution'), false);
+  const db = new DatabaseSync(f.database.prepare('PRAGMA database_list').get().file, {readOnly: true});
+  try {assert.deepEqual(new SqliteTrainingRequests({database: db}).submission(f.actor, stored.jobId, f.now), expected);}
+  finally {db.close();}
+});
+
+test('old generic prepared payloads are never interpreted as executable training submissions', async t => {
+  const f = await fixture(t), input = request(), stored = f.store.record(f.actor, input, f.now);
+  const old = JSON.stringify({name: 'old', description: '', preparedSpec: {argv: ['legacy']}});
+  f.database.prepare('UPDATE v2_training_requests SET payload_json=? WHERE job_id=?').run(old, stored.jobId);
+  assert.throws(() => f.store.submission(f.actor, stored.jobId, f.now), hasCode('TRAINING_REQUEST_SCHEMA_MISMATCH'));
+  assert.equal(f.store.get(f.actor, input.requestId, f.now).jobId, stored.jobId);
+  assert.equal(f.database.prepare('SELECT payload_json FROM v2_training_requests WHERE job_id=?').get(stored.jobId).payload_json, old);
 });
 
 test('insertion failure leaves no phantom job or receipt', async t => {
@@ -76,11 +101,12 @@ test('insertion failure leaves no phantom job or receipt', async t => {
 test('unsafe JSON identity, excessive payload and caller identity injection are rejected', async t => {
   const f = await fixture(t), input = request();
   const cyclic = {}; cyclic.self = cyclic;
-  for (const preparedSpec of [{x: undefined}, {x: Infinity}, {x: new Date()}, cyclic]) {
-    assert.throws(() => f.store.record(f.actor, {...input, preparedSpec}, f.now), hasCode('INVALID_TRAINING_REQUEST'));
+  for (const env of [{x: undefined}, {x: Infinity}, {x: new Date()}, cyclic]) {
+    assert.throws(() => f.store.record(f.actor, {...input, execution: {...input.execution, env}}, f.now), hasCode('INVALID_TRAINING_REQUEST'));
   }
   assert.throws(() => f.store.record(f.actor, {...input, submitter: {displayName: '伪造'}}, f.now), hasCode('INVALID_TRAINING_REQUEST'));
-  assert.throws(() => f.store.record(f.actor, {...input, preparedSpec: {blob: 'x'.repeat(65536)}}, f.now), hasCode('TRAINING_REQUEST_TOO_LARGE'));
+  assert.throws(() => f.store.record(f.actor, {...input, execution: {...input.execution, argv: ['x'.repeat(65536)]}}, f.now), hasCode('INVALID_TRAINING_REQUEST'));
+  assert.throws(() => f.store.record(f.actor, {...input, preparedSpec: {}}, f.now), hasCode('INVALID_TRAINING_REQUEST'));
   assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_requests').get().n, 0);
 });
 

@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {trainingSubmission} from './v2-training-submission.mjs';
 import {sessionFixture, loginRequest} from './v2-session-fixture.mjs';
 import {SessionClient} from '../../src/client/session-client.mjs';
 import {JsonHttpTransport} from '../../src/client/http-transport.mjs';
@@ -15,6 +15,6 @@ export async function computeFixture(t) {
   await new SessionClient({transport: new JsonHttpTransport({baseUrl: f.baseUrl}), delivery: 'token'}).login(loginRequest);
   const actor = {id: 'alice', sessionId: f.database.prepare('SELECT id FROM v2_sessions').get().id}, now = Date.now();
   const requests = new SqliteTrainingRequests({database: f.database}), claims = new SqliteComputeClaims({database: f.database});
-  const job = () => requests.record(actor, {requestId: randomUUID(), name: '训练', description: '', preparedSpec: {}}, now).jobId;
+  const job = () => requests.record(actor, trainingSubmission(), now).jobId;
   return {...f, actor, now, job, claims, ready() {f.database.exec('UPDATE v2_compute_accounting SET ready=1');}};
 }

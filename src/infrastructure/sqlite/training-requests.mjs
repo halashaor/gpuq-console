@@ -4,6 +4,7 @@ import {SqliteSessionReader} from './session-reader.mjs';
 import {requireActiveSession} from '../../domain/session-policy.mjs';
 import {normalizeTrainingRequest, canonicalTrainingPayload} from '../../domain/training-request.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
+import {parseTrainingSubmission} from '../../contracts/training-submission.mjs';
 
 export function createTrainingRequestSchema(database) {
   transaction(database, () => database.exec(`CREATE TABLE v2_training_requests (
@@ -30,7 +31,10 @@ export class SqliteTrainingRequests {
     const db = this.database;
     return transaction(db, () => {
       this.#authorize(actor, now);
-      const request = normalizeTrainingRequest(input);
+      let parsed;
+      try {parsed = parseTrainingSubmission(input);}
+      catch (cause) {throw new ApplicationError('INVALID_TRAINING_REQUEST', {cause});}
+      const request = normalizeTrainingRequest(parsed);
       const payload = canonicalTrainingPayload(request);
       const digest = createHash('sha256').update(payload).digest('hex');
       const existing = db.prepare('SELECT * FROM v2_training_requests WHERE request_id=?').get(request.requestId);
@@ -56,6 +60,17 @@ export class SqliteTrainingRequests {
       if (!row) return null;
       if (row.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
       return receipt(row);
+    });
+  }
+
+  /** Internal dispatcher read. Execution arguments never appear in public receipts. */
+  submission(actor, jobId, now) {
+    return readTransaction(this.database, () => {
+      this.#authorize(actor, now);
+      const row = this.database.prepare('SELECT * FROM v2_training_requests WHERE job_id=?').get(jobId);
+      if (!row || row.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+      try {return parseTrainingSubmission({...JSON.parse(row.payload_json), requestId: row.request_id});}
+      catch (cause) {throw new ApplicationError('TRAINING_REQUEST_SCHEMA_MISMATCH', {cause});}
     });
   }
 }

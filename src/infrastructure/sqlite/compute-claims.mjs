@@ -71,7 +71,12 @@ export class SqliteComputeClaims {
     const existing = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
     if (existing) {
       if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
-      if (requireCurrentAccess) this.#balance(actor, machineId, session);
+      if (requireCurrentAccess) {
+        const balance = this.#balance(actor, machineId, session);
+        if (balance.heldOnMachine > balance.machineLimit || (balance.totalLimit !== null && balance.heldTotal > balance.totalLimit)) {
+          throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
+        }
+      }
       return receipt(existing);
     }
     const balance = this.#balance(actor, machineId, session);

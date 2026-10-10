@@ -24,7 +24,7 @@ import {ValidateTrainingResources} from '../src/application/validate-training-re
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
 import {createTrainingRequestSchema, SqliteTrainingRequests} from '../src/infrastructure/sqlite/training-requests.mjs';
 import {createComputeClaimsSchema, SqliteComputeClaims} from '../src/infrastructure/sqlite/compute-claims.mjs';
-import {randomUUID} from 'node:crypto';
+import {trainingSubmission} from './helpers/v2-training-submission.mjs';
 
 const credential = 'c'.repeat(64), context = {actor: {id: 'alice'}}, hasCode = code => error => error.code === code;
 async function serve(t, handler) {
@@ -69,7 +69,7 @@ test('remote project observation and registration use actual node/Python metadat
   assert.equal(candidates.candidates[0].quotaFit.exclusiveFreeFitGpuCount, 1);
   assert.deepEqual(candidates.candidates[0].dataReads[0].location, {containerPath: '/datasets/images', readOnly: true});
   const job = new SqliteTrainingRequests({database: f.database}).record(actor,
-    {requestId: randomUUID(), name: '占额夹具', description: '', preparedSpec: {}}, Date.now());
+    {...trainingSubmission(), name: '占额夹具'}, Date.now());
   quota.claim(actor, {jobId: job.jobId, machineId: 'node-1', gpuCount: 2}, Date.now());
   const waiting = await observer.execute(actor, request);
   assert.equal(waiting.candidates.length, 1);

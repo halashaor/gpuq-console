@@ -64,6 +64,17 @@ test('released quota cannot create a new dispatch and revoked sessions cannot re
   assert.throws(() => f.dispatches.get(f.actor, f.command.jobId, f.now), hasCode('UNAUTHENTICATED'));
 });
 
+test('quota reductions cannot turn an over-limit old hold into a new dispatch', async t => {
+  const f = await fixture(t); f.ready();
+  f.claims.claim(f.actor, f.command, f.now);
+  f.database.exec('UPDATE v2_compute_policies SET total_cards=1');
+  assert.throws(() => f.dispatches.prepare(f.actor, f.command, f.now), hasCode('COMPUTE_QUOTA_EXCEEDED'));
+  f.database.exec("UPDATE v2_compute_policies SET total_cards=4; UPDATE v2_machine_grants SET max_cards=1 WHERE machine_id='node-1'");
+  assert.throws(() => f.dispatches.prepare(f.actor, f.command, f.now), hasCode('COMPUTE_QUOTA_EXCEEDED'));
+  assert.equal(f.dispatches.get(f.actor, f.command.jobId, f.now), null);
+  assert.equal(f.claims.get(f.actor, f.command.jobId, f.now).state, 'HELD');
+});
+
 test('independent writers cannot prepare the same job on two different machines', async t => {
   const f = await fixture(t); f.ready();
   const path = f.database.prepare('PRAGMA database_list').get().file;
