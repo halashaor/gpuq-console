@@ -4,12 +4,13 @@ from pathlib import Path
 import sqlite3
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 loader = importlib.util.spec_from_file_location('authority_fixture', Path(__file__).with_name('gpuq-priority.test.py'))
 F = importlib.util.module_from_spec(loader); loader.loader.exec_module(F)
 from gpuq import store as S
 from gpuq.store import Store, StoreSchemaError
+from gpuq.backends import UnitNotFoundError
 
 
 class AllocationAuthoritySchema(unittest.TestCase):
@@ -23,6 +24,12 @@ class AllocationAuthoritySchema(unittest.TestCase):
         return self.store.create_attempt(job['id'], attempt_id=attempt_id, gpu_uuids=[f'GPU-{i}' for i in indices],
             gpu_indices=list(indices), unit_name='gpuq-' + attempt_id.lower(), unit_token=attempt_id,
             boot_id='test-boot', control_dir=str(control), log_path=str(log))
+
+    def managed(self, job, limit=None):
+        db = self.store._get_connection()
+        db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
+        if limit is not None:
+            db.execute('INSERT INTO allocation_grants VALUES(?,?,1,?)', (job['id'], str(uuid.uuid4()), limit))
 
     def old_database(self):
         job = self.submit()
@@ -126,6 +133,63 @@ class AllocationAuthoritySchema(unittest.TestCase):
         self.store.release_leases(attempt_id=first['id'])
         self.store.acquire_leases(job['id'], second['id'], {'GPU-1': 1})
         self.assertEqual(self.store.list_leases()[0]['gpu_uuid'], 'GPU-1')
+
+    def test_unpermitted_head_does_not_preempt_or_block_lower_priority_free_card_work(self):
+        head = self.submit(priority=4, gpu_count=4, dispatch_mode='preempt-now')
+        self.managed(head)
+        low = self.submit(priority=0)
+        self.snapshot(occupied=(0, 1, 2))
+        self.coordinator._running_candidates = Mock(side_effect=AssertionError('unpermitted preemption discovery'))
+        self.coordinator._health = 'ok'
+        self.coordinator._schedule()
+        self.assertEqual(self.store.get_job(head['id'])['state'], 'PENDING')
+        self.assertEqual(self.store.get_job(low['id'])['state'], 'STARTING')
+        self.assertEqual(self.coordinator.health_name, 'ok')
+        self.coordinator._running_candidates.assert_not_called()
+
+    def test_elastic_selection_intersects_grant_without_rewriting_original_maximum(self):
+        high = self.submit(priority=4, gpu_count=4, min_gpu_count=1, elastic_gpu_count=True,
+                           target_global_batch_size=64, per_device_micro_batch_size=4)
+        self.managed(high, 3)
+        low = self.submit(priority=0)
+        self.coordinator._schedule()
+        self.assertEqual(len(self.store.list_leases(job_id=high['id'])), 2)
+        self.assertEqual(self.store.get_job(high['id'])['gpu_count'], 4)
+        self.assertEqual(len(self.store.list_leases(job_id=low['id'])), 1)
+
+    def test_grant_revocation_between_selection_and_lease_write_is_local_to_that_job(self):
+        high = self.submit(priority=4); self.managed(high, 1)
+        low = self.submit(priority=0)
+        original = self.coordinator._plan_start
+        def revoke(job, devices, **kwargs):
+            if job['id'] == high['id']:
+                self.store._get_connection().execute('UPDATE allocation_grants SET max_gpu_count=0 WHERE job_id=?', (high['id'],))
+            return original(job, devices, **kwargs)
+        with patch.object(self.coordinator, '_plan_start', side_effect=revoke):
+            self.coordinator._schedule()
+        self.assertEqual(self.store.get_job(high['id'])['state'], 'PENDING')
+        self.assertEqual(self.store.list_attempts(job_id=high['id']), [])
+        self.assertEqual(self.store.get_job(low['id'])['state'], 'STARTING')
+
+    def test_shared_jobs_wait_for_their_own_grant_without_blocking_other_shared_jobs(self):
+        blocked = self.submit(priority=4, share_gpu=True, vram_mb=1024, placement='pinned', requested_gpu_uuids=['GPU-0'])
+        self.managed(blocked)
+        ordinary = self.submit(priority=0, share_gpu=True, vram_mb=1024, placement='pinned', requested_gpu_uuids=['GPU-0'])
+        self.coordinator._schedule_shared()
+        self.assertEqual(self.store.get_job(blocked['id'])['state'], 'PENDING')
+        self.assertEqual(self.store.get_job(ordinary['id'])['state'], 'STARTING')
+
+    def test_unstarted_action_waits_locally_if_grant_is_revoked_after_lease_planning(self):
+        job = self.submit(); self.managed(job, 1)
+        self.coordinator._schedule()
+        self.store._get_connection().execute('UPDATE allocation_grants SET max_gpu_count=0 WHERE job_id=?', (job['id'],))
+        self.systemd.status.side_effect = UnitNotFoundError('unit absent')
+        self.coordinator._health = 'ok'
+        self.coordinator._process_actions()
+        self.systemd.start.assert_not_called()
+        self.assertEqual(self.store.list_actions()[0]['state'], 'PENDING')
+        self.assertEqual(self.coordinator.health_name, 'ok')
+        self.assertEqual(len(self.store.list_leases(job_id=job['id'])), 1)
 
 
 if __name__ == '__main__':

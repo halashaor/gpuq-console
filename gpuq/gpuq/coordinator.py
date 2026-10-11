@@ -57,7 +57,7 @@ from .progress import (
     load_progress_file,
 )
 from .rpc import ApiError
-from .store import Store, StoreConflictError, StoreNotFoundError
+from .store import Store, StoreConflictError, StoreNotFoundError, AllocationGrantError
 from .submission import validate_submission
 from .util import (
     atomic_write_json,
@@ -3503,6 +3503,10 @@ class Coordinator:
                 self.store.complete_action(
                     action["id"], claim_token=claim_token, result=result
                 )
+            except AllocationGrantError as exc:
+                self.store.fail_action(action['id'], str(exc), claim_token=claim_token,
+                                       retry=True, available_at=self.clock() + 1.0)
+                continue
             except StartCapacityBlocked as exc:
                 # A process can appear after the tick snapshot.  Keep the
                 # already-reserved lease, delay only this start, and let the
@@ -3563,6 +3567,10 @@ class Coordinator:
                 )
         return by_uuid
 
+    def _require_start_allocation(self, job: dict[str, Any], attempt: dict[str, Any]) -> None:
+        if job.get('allocation_authority') is not None and len(attempt['gpu_uuids']) not in self._authorized_gpu_counts(job):
+            raise AllocationGrantError('external allocation grant does not cover start')
+
     @_release_mutation
     def _execute_start(self, action: dict[str, Any]) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
@@ -3588,6 +3596,7 @@ class Coordinator:
                 invocation_id=attempt.get("invocation_id"),
             )
         except UnitNotFoundError:
+            self._require_start_allocation(job, attempt)
             try:
                 if job.get("share_gpu"):
                     devices = tuple(self.gpu_provider.snapshot())
@@ -3634,6 +3643,7 @@ class Coordinator:
                 self._require_release_open()
                 atomic_write_json(launch_path, launch_spec, mode=0o600)
             try:
+                self._require_start_allocation(job, attempt)
                 self._require_release_open()
                 status = self.systemd.start(
                     unit_name=payload["unit_name"],
@@ -4146,7 +4156,8 @@ class Coordinator:
     def _schedule_scale_ups(self) -> None:
         # Expansion is opportunistic.  Any queued work gets a complete normal
         # scheduling pass before a running job may reserve additional GPUs.
-        if self.store.list_jobs(states=[JobState.PENDING], limit=1):
+        pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+        if len(pending) == 10_000 or any(self._authorized_gpu_counts(job) for job in pending):
             return
         free = self._free_devices()
         if not free:
@@ -4172,15 +4183,21 @@ class Coordinator:
             if self._scale_up_in_cooldown(job["id"], attempt):
                 continue
             current_count = len(attempt["gpu_uuids"])
+            allowed_counts = self._authorized_gpu_counts(job)
+            if job.get('allocation_authority') is not None and current_count not in allowed_counts:
+                continue
             target_count = select_scale_target(
                 current_gpu_count=current_count,
                 free_gpu_count=len(free),
-                allowed_gpu_counts=self._allowed_gpu_counts(job),
+                allowed_gpu_counts=allowed_counts,
             )
             if target_count is None:
                 continue
             extras = free[: target_count - current_count]
-            self._plan_scale_up(job, attempt, extras)
+            try:
+                self._plan_scale_up(job, attempt, extras)
+            except AllocationGrantError:
+                continue
             used = {device.uuid for device in extras}
             free = [device for device in free if device.uuid not in used]
             if not free:
@@ -4301,7 +4318,10 @@ class Coordinator:
 
     @_release_mutation
     def _schedule_scale_up_restarts(self) -> None:
-        pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+        def authorized_pending() -> list[dict[str, Any]]:
+            return [job for job in self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+                    if self._authorized_gpu_counts(job)]
+        pending = authorized_pending()
         restart_plans: list[dict[str, Any]] = []
         ordinary_pending = False
         for job in pending:
@@ -4339,7 +4359,7 @@ class Coordinator:
                     hard_conflict,
                     expected_states=[ScaleUpState.RESTART_PENDING],
                 )
-                pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+                pending = authorized_pending()
                 continue
             if not self._scale_target_is_stable(plan, extras_only=False):
                 restart_deadline = float(plan["updated_at"]) + float(
@@ -4352,13 +4372,18 @@ class Coordinator:
                         "before timeout",
                         expected_states=[ScaleUpState.RESTART_PENDING],
                     )
-                    pending = self.store.list_jobs(
-                        states=[JobState.PENDING], limit=10_000
-                    )
+                    pending = authorized_pending()
                     continue
                 return
-            self._plan_scale_up_restart(head, plan)
-            pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+            if int(plan['target_gpu_count']) not in self._authorized_gpu_counts(head):
+                pending = pending[1:]
+                continue
+            try:
+                self._plan_scale_up_restart(head, plan)
+            except AllocationGrantError:
+                pending = pending[1:]
+                continue
+            pending = authorized_pending()
 
     @_release_mutation
     def _reconcile_scale_up_plans(self) -> None:
@@ -4452,19 +4477,29 @@ class Coordinator:
             )
         return result
 
+    def _authorized_gpu_counts(self, job: dict[str, Any]) -> tuple[int, ...]:
+        allowed = self._allowed_gpu_counts(job)
+        if job.get('allocation_authority') is None:
+            return allowed
+        authorization = self.store.get_allocation_authorization(str(job['id']))
+        grant = authorization['grant']
+        if grant is None:
+            return ()
+        return tuple(count for count in allowed if count <= int(grant['max_gpu_count']))
+
     @staticmethod
     def _select_free_devices_for_job(
-        job: dict[str, Any], free: list[GpuDevice]
+        job: dict[str, Any], free: list[GpuDevice], allowed_gpu_counts: tuple[int, ...] | None = None,
     ) -> list[GpuDevice]:
+        legal_counts = Coordinator._allowed_gpu_counts(job) if allowed_gpu_counts is None else allowed_gpu_counts
         if job.get("placement") != "pinned":
-            legal_counts = Coordinator._allowed_gpu_counts(job)
             usable_counts = [count for count in legal_counts if count <= len(free)]
             if not usable_counts:
                 return []
             # An attempt consumes the largest legal capacity available at its
             # start decision.  Its lease set is immutable for its lifetime.
             return free[: usable_counts[-1]]
-        if int(job["gpu_count"]) not in Coordinator._allowed_gpu_counts(job):
+        if int(job["gpu_count"]) not in legal_counts:
             return []
         by_uuid = {device.uuid: device for device in free}
         requested = job.get("requested_gpu_uuids", [])
@@ -4586,6 +4621,9 @@ class Coordinator:
         free = self._free_devices()
         backfill_only = False
         for job in pending:
+            allowed_gpu_counts = self._authorized_gpu_counts(job)
+            if not allowed_gpu_counts:
+                continue
             fallback_plan = fallback_plans[job["id"]]
             scale_plan = self.store.get_active_scale_up_plan(job["id"])
             if (
@@ -4595,18 +4633,21 @@ class Coordinator:
                 # The exact target is durably fenced and is handled by
                 # _schedule_scale_up_restarts.  Never launch this lineage on a
                 # different assignment through the generic pending path.
+                if int(scale_plan['target_gpu_count']) not in allowed_gpu_counts:
+                    continue
                 break
             if fallback_plan is not None:
                 fallback_count = int(fallback_plan["from_gpu_count"])
+                if fallback_count not in allowed_gpu_counts:
+                    continue
                 selected = free[:fallback_count] if len(free) >= fallback_count else []
             else:
-                selected = self._select_free_devices_for_job(job, free)
+                selected = self._select_free_devices_for_job(job, free, allowed_gpu_counts)
             if selected:
-                self._plan_start(
-                    job,
-                    selected,
-                    scale_fallback_plan=fallback_plan,
-                )
+                try:
+                    self._plan_start(job, selected, scale_fallback_plan=fallback_plan)
+                except AllocationGrantError:
+                    continue
                 selected_uuids = {device.uuid for device in selected}
                 free = [device for device in free if device.uuid not in selected_uuids]
                 continue
@@ -4631,7 +4672,6 @@ class Coordinator:
 
             promised_uuids = self._promised_preemption_gpu_uuids(job)
             available_uuids = free_uuids | promised_uuids
-            allowed_gpu_counts = self._allowed_gpu_counts(job)
             launch_floor = (
                 int(fallback_plan["from_gpu_count"])
                 if fallback_plan is not None
@@ -4658,7 +4698,7 @@ class Coordinator:
                 candidates.extend(self._save_takeover_candidates(job))
                 victims = select_victims(
                     requester_priority=job["priority"],
-                    requester_gpu_count=job["gpu_count"],
+                    requester_gpu_count=allowed_gpu_counts[-1],
                     requester_min_gpu_count=launch_floor,
                     free_gpu_count=len(available_uuids),
                     dispatch_mode=job["dispatch_mode"],
@@ -4701,6 +4741,8 @@ class Coordinator:
                 continue
             if self._job_sync_blocked(job):
                 continue
+            if not self._authorized_gpu_counts(job):
+                continue
             if job.get("hami_core"):
                 try:
                     runtime_library(self.config.archive_path, job["sm_percent"])
@@ -4720,7 +4762,10 @@ class Coordinator:
                     continue
             selected = self._shared_devices_for_job(job)
             if selected:
-                self._plan_start(job, selected)
+                try:
+                    self._plan_start(job, selected)
+                except AllocationGrantError:
+                    continue
 
     def handle_api(self, operation: str, arguments: dict[str, Any]) -> Any:
         with self._lock:
