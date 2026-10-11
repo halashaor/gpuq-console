@@ -223,6 +223,8 @@ AUTO 成功回执的 `machine` 是已持久保存的最终目标，另附 `selec
 
 新版 `files.get` 接受可选的 64 位小写十六进制 `fingerprint`，返回 `protocol:2,path,size,offset,data,eof,fingerprint`。指纹固定原账号、项目/任务、相对路径及源 stat 身份；每块读取前后核验，变化或请求指纹不符即拒绝。旧返回字段仍保留。CLI 的私人本地回执绑定精确来源和已落盘前缀，已有无回执文件拒绝采用；旧节点下载可用但不可自动恢复。节点 executor、门户和 CLI 配套发布才具备完整恢复契约。
 
+`files.result.get {machine,project,area:"output",runId,path,offset?,fingerprint?}` 是显式的门户结果下载，CLI 使用 `pull --job JOB_ID --via portal`。仅本人作业、匹配服务器与项目可读；管理员不能读取其他人的输出。调用前后复查归属与机器授权，沿用有界远端读取车道及节点的固定 `files.get`，每块最多 1 MiB，要求 protocol=2 与文件指纹。只返回原下载协议字段；没有新增节点 RPC、上传入口或自动中转。断线保留同一来源回执，继续核对本地前缀；校外不需要访问校园传输端口。
+
 项目锁竞争最多等待两秒取得原锁，超时返回可识别 busy；不重试操作体，也不改变 service-owned、单链接、私人权限或 no-follow 条件。`datasets.prepare` 内部目录鉴权使用数据库当前角色，个人数据传输仍使用 owner-only member 身份，管理员不因此获得其他账号材料。
 
 `datasets.workspace.status` 的个人发布回执可含 `phase`（`SCANNING/REGISTERING/REGISTERED/ARCHIVE_INTENT/MATERIALIZING/COMPLETED`）。已确认登记的 `dataset/version/files/bytes` 在后续失败中保持；登记前不推断版本已存在。取锁失败可含 `failureKind:CACHE_BUSY` 与 `lockWait:{scope:CACHE|VERSION,limit:SINGLE_WAIT|TOTAL_BUDGET,timeoutSeconds:number}`，只解释已耗尽的等待边界，不返回锁路径或持锁者。旧回执无字段仍按未知；只读查询和重复原 key 不重新派发。明确 FAILED 后的受支持显式发布使用新 key、原目录和原名称，未变内容复用相同版本与已校验片段；集中仓库的旧发布禁用策略保持。

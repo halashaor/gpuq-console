@@ -28,6 +28,7 @@ gpuctl watch JOB
 gpuctl diagnostics JOB --json
 gpuctl files --job JOB_ID
 gpuctl pull --job JOB_ID model.pt ./model.pt
+校外取回结果：在原 pull 命令加 --via portal，使用 HTTPS 门户并保留续传回执。
 
 4. 完整数据先入仓库，再准备训练缓存
 gpuctl data upload FILE.tar.gz --name NAME --via direct

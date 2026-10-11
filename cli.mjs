@@ -18,7 +18,7 @@ import {progressText,jobTimingText} from './dist/job-progress.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
 import {apiPost} from './client-http.mjs';
-import {downloadFile} from './client-file-download.mjs';
+import {downloadResultFile} from './client-result-download.mjs';
 
 // Member metadata is untrusted even after submission validators improve: old
 // stored records and older servers can still contain C1/ANSI or bidi controls.
@@ -236,7 +236,11 @@ async function main(){
   }
   if(positionals[0]==='notify'&&(positionals.length!==3||!['on','off','status'].includes(positionals[2])||training.length||options.machines.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','json','url','session-file'].includes(k))))fail('Usage: notify JOB on|off|status');
   if(options.overwrite&&!(positionals[0]==='data'&&positionals[1]==='put'))fail('--overwrite is only valid for data put');
-  if(options.via!==undefined&&(!((['data','transfer'].includes(positionals[0])&&positionals[1]==='upload')||(positionals[0]==='data'&&positionals[1]==='put'&&options.via!=='direct'))||!['auto','direct','relay'].includes(options.via)))fail('--via auto|direct|relay is for directory uploads; data put accepts only auto or relay');
+  if(options.via!==undefined){
+    if(['pull','download'].includes(positionals[0])){
+      if(options.via!=='portal'||!options.job)fail('结果下载请使用 pull --job JOB_ID --via portal。');
+    }else if(!((['data','transfer'].includes(positionals[0])&&positionals[1]==='upload')||(positionals[0]==='data'&&positionals[1]==='put'&&options.via!=='direct'))||!['auto','direct','relay'].includes(options.via))fail('--via auto|direct|relay is for directory uploads; data put accepts only auto or relay');
+  }
   if(options.priority&&!['idle','normal','high'].includes(options.priority))fail('Priority must be idle, normal or high');
   if(options.priority&&positionals[0]!=='run')fail('--priority is only valid for run; use gpuctl priority JOB idle|normal|high');
   if(options.cwd!==undefined&&!['exec','maintenance'].includes(positionals[0])||options.timeout!==undefined&&!['exec','maintenance'].includes(positionals[0])&&!transferCopy||options.detach&&positionals[0]!=='exec'&&!transferCopy)fail('--cwd is for exec/maintenance; timeout also supports transfer copy; detach is for exec or transfer copy');
@@ -833,7 +837,7 @@ async function main(){
       result=await uploadCodeFiles(call,{machine,context,local:positionals[2],remote:positionals[3]||basename(positionals[2]),inspectOnly:command==='upload-status'});
     }else if(command==='download'&&positionals.length===4){
       const context=fileArgs(positionals[1]);
-      result=await downloadFile(call,{machine:positionals[1],context,path:positionals[2],destination:positionals[3],origin:base.origin,userId:session.principal.userId});
+      result=await downloadResultFile(call,{machine:positionals[1],context,path:positionals[2],destination:positionals[3],origin:base.origin,userId:session.principal.userId,via:options.via});
     }else if(command==='grant'&&positionals.length===2){
       const userId=find(positionals[1]),policyVersion=state.users.find(u=>u.id===userId).policyVersion;
       if(options.full){result=(await call('policy.full',{userId,policyVersion})).result;}

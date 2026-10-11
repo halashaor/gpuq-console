@@ -39,5 +39,8 @@ test('guide uses deployment evidence instead of promising merged protocol suppor
   assert.match(guide,/不能仅凭客户端已更新或源码已合并判断可用/);
   assert.match(guide,/节点必须确认用途受限的校园 HTTPS 文件票据/);
   assert.match(guide,/能力缺失或无法连接时暂停，不转 VPS\/Tail/);
+  assert.match(guide,/pull --job JOB_ID --via portal/);
+  assert.match(guide,/只读本人任务输出/);
+  assert.match(guide,/直传失败不会自动切换通道/);
   assert.doesNotMatch(guide,/project create my-container/,'Avoid a second competing first-use walkthrough');
 });

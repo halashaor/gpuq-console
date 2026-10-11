@@ -1,4 +1,5 @@
 import {archiveUploadSpecification} from './dist/dataset-upload.js';
+import {resultFileDownload} from './result-file-download.mjs';
 import net from 'node:net';
 import {setTimeout as readDelay} from 'node:timers/promises';
 import {authorizationPolicy,MACHINES} from './dist/model.js';
@@ -292,6 +293,7 @@ export async function executionCall(service,principal,operation,args,readContext
   const jobView=job=>publicJob(job,service.store.users);
   if(!user.enabled)fail('账号已暂停。',403);
   service.assertMaintenanceAllowed?.(operation,args,principal);
+  if(operation==='files.result.get')return resultFileDownload(service,principal,args);
   service=displayReadService(service,operation);
   if(['datasets.delete','datasets.delete.status','datasets.delete.restore','datasets.delete.continue','datasets.delete.cancel','datasets.delete.registration.discard'].includes(operation))return service.datasetDeletionCall(principal,operation,args);
   if(['datasets.catalog','datasets.capacity'].includes(operation))return datasetCatalogCall(service,principal,operation,args);
