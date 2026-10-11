@@ -97,7 +97,8 @@ _REQUIRED_TABLES_V5 = frozenset(
     }
 )
 _REQUIRED_TABLES_V6_TO_V10 = frozenset({*_REQUIRED_TABLES_V5, "attempt_progress"})
-_REQUIRED_TABLES = frozenset({*_REQUIRED_TABLES_V6_TO_V10, "gpu_allocation_history"})
+_REQUIRED_TABLES_V11_TO_V13 = frozenset({*_REQUIRED_TABLES_V6_TO_V10, "gpu_allocation_history"})
+_REQUIRED_TABLES = frozenset({*_REQUIRED_TABLES_V11_TO_V13, "allocation_grants"})
 
 
 class StoreError(RuntimeError):
@@ -1297,11 +1298,29 @@ _SCHEMA_V12_TO_V13_DDL = (
     """ALTER TABLE jobs ADD COLUMN display_json TEXT NOT NULL DEFAULT '{}'
     CHECK (json_valid(display_json) AND json_type(display_json)='object')""",
 )
-_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+_EXPECTED_SCHEMA_SIGNATURE_V13 = _build_expected_schema_signature((
     *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
     *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
     *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
     *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL,
+))
+
+_SCHEMA_V13_TO_V14_DDL = (
+    "ALTER TABLE jobs ADD COLUMN allocation_authority TEXT CHECK(allocation_authority IS NULL OR allocation_authority='external-v1')",
+    """CREATE TABLE allocation_grants (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      grant_id TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL CHECK(revision>=1),
+      max_gpu_count INTEGER NOT NULL CHECK(max_gpu_count BETWEEN 0 AND 4096)
+    )""",
+    """CREATE TRIGGER jobs_allocation_authority_immutable BEFORE UPDATE OF allocation_authority ON jobs
+      WHEN OLD.allocation_authority IS NOT NULL AND NEW.allocation_authority IS NOT OLD.allocation_authority
+      BEGIN SELECT RAISE(ABORT,'allocation authority is immutable'); END""",
+)
+_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
+    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
+    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
+    *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL, *_SCHEMA_V13_TO_V14_DDL,
 ))
 
 
@@ -1513,6 +1532,9 @@ class Store:
                         version = 12
                     if version == 12:
                         self._migrate_v12_to_v13(connection)
+                        version = 13
+                    if version == 13:
+                        self._migrate_v13_to_v14(connection)
                     self._validate_schema(connection)
                     connection.commit()
                 except BaseException:
@@ -1584,8 +1606,10 @@ class Store:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if version in {11, 12, STORE_SCHEMA_VERSION}:
+        if version == STORE_SCHEMA_VERSION:
             required_tables = _REQUIRED_TABLES
+        elif version in {11, 12, 13}:
+            required_tables = _REQUIRED_TABLES_V11_TO_V13
         elif version in {_SCHEMA_VERSION_V6, _SCHEMA_VERSION_V7, _SCHEMA_VERSION_V8, _SCHEMA_VERSION_V9, _SCHEMA_VERSION_V10}:
             required_tables = _REQUIRED_TABLES_V6_TO_V10
         elif version == _SCHEMA_VERSION_V5:
@@ -1898,6 +1922,14 @@ class Store:
             connection.execute(statement)
         connection.execute("UPDATE schema_meta SET schema_version=13 WHERE singleton=1")
         connection.execute("PRAGMA user_version=13")
+        self._validate_schema_version(connection, version=13, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V13)
+
+    def _migrate_v13_to_v14(self, connection: sqlite3.Connection) -> None:
+        self._validate_schema_version(connection, version=13, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V13)
+        for statement in _SCHEMA_V13_TO_V14_DDL:
+            connection.execute(statement)
+        connection.execute("UPDATE schema_meta SET schema_version=14 WHERE singleton=1")
+        connection.execute("PRAGMA user_version=14")
         self._validate_schema(connection)
 
     @staticmethod
@@ -2461,6 +2493,18 @@ class Store:
                 'FROM jobs WHERE submit_key=?', (key,),
             ).fetchone()
         return None if row is None else dict(row)
+
+    def get_allocation_authorization(self, job_id: str) -> dict[str, Any]:
+        """Distinguish native jobs from explicitly managed jobs with no grant yet."""
+        with self._read_connection() as connection:
+            row = connection.execute('''SELECT j.allocation_authority,g.grant_id,g.revision,g.max_gpu_count
+                FROM jobs j LEFT JOIN allocation_grants g ON g.job_id=j.id WHERE j.id=?''', (job_id,)).fetchone()
+        if row is None:
+            raise StoreNotFoundError(f'job not found: {job_id}')
+        if row['allocation_authority'] is None:
+            return {'mode': 'native', 'grant': None}
+        grant = None if row['grant_id'] is None else {key: row[key] for key in ('grant_id', 'revision', 'max_gpu_count')}
+        return {'mode': row['allocation_authority'], 'grant': grant}
 
     def get_scale_up_receipt(self, submit_key: str, plan_id: str) -> dict[str, Any] | None:
         """One consistent observation; terminal plan state alone does not prove GPUs released."""

@@ -13,6 +13,7 @@ loader=importlib.util.spec_from_file_location('display_priority_fixture',Path(__
 F=importlib.util.module_from_spec(loader);loader.loader.exec_module(F)
 from gpuq import cli
 from gpuq.rpc import ApiError
+from gpuq.constants import STORE_SCHEMA_VERSION
 from gpuq.store import Store,StoreConflictError,StoreSchemaError
 
 class Display(unittest.TestCase):
@@ -60,6 +61,8 @@ class Display(unittest.TestCase):
     def test_v12_running_schema_migration_keeps_rows_attempts_leases_and_digest(self):
         job,attempt=self.running((0,1));path=self.root/'legacy12.db'
         current=sqlite3.connect(self.config.db_path);old=sqlite3.connect(path);current.backup(old);current.close()
+        old.execute('DROP TRIGGER jobs_allocation_authority_immutable');old.execute('DROP TABLE allocation_grants')
+        old.execute('ALTER TABLE jobs DROP COLUMN allocation_authority')
         old.execute('ALTER TABLE jobs DROP COLUMN display_json');old.execute('UPDATE schema_meta SET schema_version=12');old.execute('PRAGMA user_version=12');old.commit()
         prior=old.execute('SELECT id,submit_key,submit_digest,state,owner,name FROM jobs').fetchall();leases=old.execute('SELECT * FROM leases').fetchall();old.close()
         # Ordinary daemon/store open must not silently upgrade an active DB.
@@ -76,7 +79,7 @@ class Display(unittest.TestCase):
             self.assertEqual(unchanged.execute('SELECT * FROM leases').fetchall(),leases)
         migrated=Store(path).initialize()
         try:
-            self.assertEqual(migrated.check_integrity()['schema_version'],13)
+            self.assertEqual(migrated.check_integrity()['schema_version'],STORE_SCHEMA_VERSION)
             self.assertEqual([tuple(r) for r in migrated._get_connection().execute('SELECT id,submit_key,submit_digest,state,owner,name FROM jobs')],prior)
             self.assertEqual([tuple(r) for r in migrated._get_connection().execute('SELECT * FROM leases')],leases)
             self.assertEqual(migrated.get_job(job['id'])['display_metadata'],{})
