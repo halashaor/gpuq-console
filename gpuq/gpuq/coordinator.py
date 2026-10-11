@@ -76,7 +76,7 @@ _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
 _RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
 _MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt"})
+_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -4779,6 +4779,12 @@ class Coordinator:
                 return node_api(self, operation, arguments)
             if operation == "submit":
                 return self._api_submit(arguments)
+            if operation == "submit_managed":
+                return self._api_submit_managed(arguments)
+            if operation == "allocation_status":
+                return self._api_allocation_status(arguments)
+            if operation == "set_allocation_grant":
+                return self._api_set_allocation_grant(arguments)
             if operation == "set_job_display":
                 return self._api_set_job_display(arguments)
             if operation == "status":
@@ -4829,7 +4835,7 @@ class Coordinator:
         raise RuntimeError("could not allocate a unique job id")
 
     @_release_mutation
-    def _api_submit(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _api_submit(self, arguments: dict[str, Any], *, allocation_grant: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             submission = validate_submission(
                 arguments,
@@ -4856,7 +4862,7 @@ class Coordinator:
                 ):
                     raise ValueError("shared VRAM budget exceeds this GPU's capacity")
             with self.store.transaction() as tx:
-                job = tx.submit_job(submission)
+                job = tx.submit_job(submission) if allocation_grant is None else tx.submit_managed_job(submission, **allocation_grant)
                 tx.append_event(
                     "JOB_SUBMITTED",
                     job_id=job["id"],
@@ -4896,6 +4902,40 @@ class Coordinator:
             "placement": job["placement"],
             "requested_gpu_uuids": job["requested_gpu_uuids"],
         }
+
+    def _api_submit_managed(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        _require_exact_fields(arguments, allowed={'submission', 'grant_id', 'max_gpu_count'},
+                              required={'submission', 'grant_id', 'max_gpu_count'})
+        result = self._api_submit(arguments['submission'], allocation_grant={
+            'grant_id': arguments['grant_id'], 'max_gpu_count': arguments['max_gpu_count']})
+        return {**result, 'allocation': self.store.get_allocation_authorization(result['job_id'])}
+
+    def _api_allocation_status(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        _require_exact_fields(arguments, allowed={'submit_key'}, required={'submit_key'})
+        try:
+            receipt = self.store.get_submission_receipt(arguments['submit_key'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
+        if receipt is None:
+            return None
+        return {'job_id': receipt['job_id'], 'submit_key': receipt['submit_key'],
+                **self.store.get_allocation_authorization(receipt['job_id'])}
+
+    @_release_mutation
+    def _api_set_allocation_grant(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        _require_exact_fields(arguments, allowed={'submit_key', 'grant_id', 'expected_revision', 'max_gpu_count'},
+                              required={'submit_key', 'grant_id', 'expected_revision', 'max_gpu_count'})
+        try:
+            receipt = self.store.get_submission_receipt(arguments['submit_key'])
+            if receipt is None:
+                raise ApiError('NOT_FOUND', 'submission not found')
+            grant = self.store.update_allocation_grant(receipt['job_id'], grant_id=arguments['grant_id'],
+                expected_revision=arguments['expected_revision'], max_gpu_count=arguments['max_gpu_count'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
+        except StoreConflictError as exc:
+            raise ApiError('ALLOCATION_CONFLICT', str(exc)) from exc
+        return {'job_id': receipt['job_id'], 'submit_key': receipt['submit_key'], 'mode': 'external-v1', 'grant': grant}
 
     @_release_mutation
     def _api_set_job_display(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -5051,7 +5091,7 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1"],
+                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,

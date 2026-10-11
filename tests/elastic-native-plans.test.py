@@ -104,7 +104,7 @@ class NativeExpansion(unittest.TestCase):
     def test_external_grant_is_required_before_reserving_extra_scale_gpus(self):
         job,attempt=self.running_elastic();db=self.store._get_connection()
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?",(job['id'],))
-        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,2)',(job['id'],'grant-scale'))
+        db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,1,2)',(job['id'],'grant-scale'))
         self.coordinator._schedule_scale_ups()
         self.assertEqual(self.store.list_scale_up_plans(),[])
         self.assertEqual(self.store.list_scale_up_reservations(),[])
@@ -130,7 +130,7 @@ class NativeExpansion(unittest.TestCase):
                                                self.store.get_active_scale_up_plan(job['id']),ack)
         plan=self.store.get_active_scale_up_plan(job['id']);db=self.store._get_connection()
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?",(job['id'],))
-        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,2)',(job['id'],'grant-scale'))
+        db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,1,2)',(job['id'],'grant-scale'))
         before='\n'.join(db.iterdump())
         with self.assertRaisesRegex(StoreConflictError,'does not cover'):
             self.store.reserve_full_scale_up_target(plan['id'])

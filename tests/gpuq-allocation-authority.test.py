@@ -4,6 +4,10 @@ from pathlib import Path
 import sqlite3
 import unittest
 import uuid
+import sys
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, Mock
 
 loader = importlib.util.spec_from_file_location('authority_fixture', Path(__file__).with_name('gpuq-priority.test.py'))
@@ -11,6 +15,9 @@ F = importlib.util.module_from_spec(loader); loader.loader.exec_module(F)
 from gpuq import store as S
 from gpuq.store import Store, StoreSchemaError
 from gpuq.backends import UnitNotFoundError
+from gpuq.submission import validate_submission
+from gpuq.protocol import Client
+from gpuq.rpc import ApiError, _ThreadingUnixServer
 
 
 class AllocationAuthoritySchema(unittest.TestCase):
@@ -29,7 +36,14 @@ class AllocationAuthoritySchema(unittest.TestCase):
         db = self.store._get_connection()
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
         if limit is not None:
-            db.execute('INSERT INTO allocation_grants VALUES(?,?,1,?)', (job['id'], str(uuid.uuid4()), limit))
+            db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,1,?)', (job['id'], str(uuid.uuid4()), limit))
+
+    def managed_submission(self):
+        return validate_submission({'submit_key': str(uuid.uuid4()), 'name': 'managed', 'owner': 'test-user',
+            'priority': 2, 'dispatch_mode': 'queue', 'checkpoint_capability': 'none', 'restart_policy': 'never',
+            'yield_policy': 'never', 'gpu_count': 4, 'min_gpu_count': 1, 'elastic_gpu_count': True,
+            'placement': 'any', 'requested_gpu_uuids': [], 'argv': [sys.executable, '-c', 'pass'],
+            'cwd': str(self.root), 'env': {}}, 4, managed_gpu_uuids=self.config.managed_gpu_uuids)
 
     def old_database(self):
         job = self.submit()
@@ -60,7 +74,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
             old.get_job(job['id'])
         old.initialize()
         try:
-            self.assertEqual(old.check_integrity()['schema_version'], 14)
+            self.assertEqual(old.check_integrity()['schema_version'], S.STORE_SCHEMA_VERSION)
             self.assertEqual(old.get_allocation_authorization(job['id']), {'mode': 'native', 'grant': None})
             self.assertEqual(old.get_submission_receipt(job['submit_key'])['submit_digest'], digest)
             keys = ('submit_key','name','owner','priority','dispatch_mode','checkpoint_capability','restart_policy',
@@ -75,7 +89,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
         db = self.store._get_connection()
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
         self.assertEqual(self.store.get_allocation_authorization(job['id']), {'mode': 'external-v1', 'grant': None})
-        db.execute('INSERT INTO allocation_grants VALUES(?,?,?,?)', (job['id'], 'grant-fixture', 1, 0))
+        db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,?,?)', (job['id'], 'grant-fixture', 1, 0))
         self.assertEqual(self.store.get_allocation_authorization(job['id']),
                          {'mode': 'external-v1', 'grant': {'grant_id': 'grant-fixture', 'revision': 1, 'max_gpu_count': 0}})
         with self.assertRaises(sqlite3.IntegrityError):
@@ -98,7 +112,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
         reopened = Store(path).initialize()
         try:
             self.assertEqual(reopened.get_job(job['id'])['id'], job['id'])
-            self.assertEqual(reopened.check_integrity()['schema_version'], 14)
+            self.assertEqual(reopened.check_integrity()['schema_version'], S.STORE_SCHEMA_VERSION)
         finally:
             reopened.close()
 
@@ -108,7 +122,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
         with self.assertRaisesRegex(S.StoreConflictError, 'grant is missing'):
             self.store.acquire_leases(job['id'], attempt['id'], {'GPU-0': 0})
-        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,0)', (job['id'], 'grant-one'))
+        db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,1,0)', (job['id'], 'grant-one'))
         with self.assertRaisesRegex(S.StoreConflictError, 'does not cover'):
             self.store.acquire_leases(job['id'], attempt['id'], {'GPU-0': 0})
         self.assertEqual(self.store.list_leases(), [])
@@ -123,7 +137,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
         first = self.attempt(job, (0,))
         db = self.store._get_connection()
         db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
-        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,1)', (job['id'], 'grant-one'))
+        db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,1,1)', (job['id'], 'grant-one'))
         self.store.acquire_leases(job['id'], first['id'], {'GPU-0': 0})
         self.store.update_attempt(first['id'], state='EXITED_FAILURE')
         second = self.attempt(job, (1,))
@@ -190,6 +204,120 @@ class AllocationAuthoritySchema(unittest.TestCase):
         self.assertEqual(self.store.list_actions()[0]['state'], 'PENDING')
         self.assertEqual(self.coordinator.health_name, 'ok')
         self.assertEqual(len(self.store.list_leases(job_id=job['id'])), 1)
+
+    def test_managed_creation_is_atomic_and_initial_replay_does_not_reset_new_grant(self):
+        submission = self.managed_submission(); grant_id = str(uuid.uuid4())
+        job = self.store.submit_managed_job(submission, grant_id=grant_id, max_gpu_count=2)
+        self.assertEqual(job['allocation_authority'], 'external-v1')
+        self.assertEqual(self.store.get_allocation_authorization(job['id'])['grant']['max_gpu_count'], 2)
+        self.store.update_allocation_grant(job['id'], grant_id=grant_id, expected_revision=1, max_gpu_count=4)
+        self.assertEqual(self.store.submit_managed_job(submission, grant_id=grant_id, max_gpu_count=2)['id'], job['id'])
+        self.assertEqual(self.store.get_allocation_authorization(job['id'])['grant']['max_gpu_count'], 4)
+        with self.assertRaisesRegex(S.StoreConflictError, 'initial allocation'):
+            self.store.submit_managed_job(submission, grant_id=grant_id, max_gpu_count=3)
+        self.assertEqual(self.store.submit_job(submission)['allocation_authority'], 'external-v1')
+
+    def test_native_submission_cannot_be_promoted_and_grant_failure_rolls_back_new_job(self):
+        submission = self.managed_submission(); native = self.store.submit_job(submission)
+        with self.assertRaisesRegex(S.StoreConflictError, 'cannot be adopted'):
+            self.store.submit_managed_job(submission, grant_id='grant-one', max_gpu_count=2)
+        self.assertEqual(self.store.get_allocation_authorization(native['id'])['mode'], 'native')
+        db = self.store._get_connection()
+        db.execute("CREATE TEMP TRIGGER fail_grant BEFORE INSERT ON allocation_grants BEGIN SELECT RAISE(ABORT,'injected'); END")
+        other = self.managed_submission()
+        with self.assertRaises(S.StoreConflictError):
+            self.store.submit_managed_job(other, grant_id='grant-two', max_gpu_count=2)
+        self.assertIsNone(self.store.get_submission_receipt(other['submit_key']))
+        self.assertEqual(db.execute('SELECT count(*) FROM allocation_grants').fetchone()[0], 0)
+
+    def test_grant_revisions_reject_stale_updates_and_support_exact_last_retry(self):
+        job = self.store.submit_managed_job(self.managed_submission(), grant_id='grant-one', max_gpu_count=1)
+        updated = self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=2)
+        self.assertEqual(updated['revision'], 2)
+        self.assertEqual(self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=2), updated)
+        self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=2, max_gpu_count=4)
+        with self.assertRaisesRegex(S.StoreConflictError, 'revision'):
+            self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=2)
+        with self.assertRaisesRegex(S.StoreConflictError, 'identity'):
+            self.store.update_allocation_grant(job['id'], grant_id='other', expected_revision=3, max_gpu_count=0)
+        with self.assertRaises(ValueError):
+            self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=3, max_gpu_count=5)
+
+    def test_grant_cannot_shrink_below_actual_lease_union(self):
+        job = self.store.submit_managed_job(self.managed_submission(), grant_id='grant-one', max_gpu_count=2)
+        self.coordinator._schedule()
+        with self.assertRaisesRegex(S.AllocationGrantError, 'cannot shrink'):
+            self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=1)
+        self.assertEqual(self.store.get_allocation_authorization(job['id'])['grant']['revision'], 1)
+        self.store.release_leases(attempt_id=self.store.list_leases(job_id=job['id'])[0]['attempt_id'])
+        self.assertEqual(self.store.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=0)['max_gpu_count'], 0)
+
+    def test_v14_upgrade_preserves_unknown_initial_grant_instead_of_guessing_current_limit(self):
+        path, job, _ = self.old_database()
+        with sqlite3.connect(path) as db:
+            for statement in S._SCHEMA_V13_TO_V14_DDL:
+                db.execute(statement)
+            db.execute("UPDATE jobs SET allocation_authority='external-v1'")
+            db.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count) VALUES(?,?,3,1)', (job['id'], 'old-grant'))
+            db.execute('UPDATE schema_meta SET schema_version=14'); db.execute('PRAGMA user_version=14')
+        migrated = Store(path).initialize()
+        try:
+            self.assertIsNone(migrated._get_connection().execute('SELECT initial_max_gpu_count FROM allocation_grants').fetchone()[0])
+            self.assertEqual(migrated.get_allocation_authorization(job['id'])['grant']['revision'], 3)
+            self.assertEqual(migrated.check_integrity()['schema_version'], 15)
+            with self.assertRaises(StoreSchemaError):
+                migrated._validate_schema_version(migrated._get_connection(), version=14, expected_signature=S._EXPECTED_SCHEMA_SIGNATURE_V14)
+        finally:
+            migrated.close()
+
+    def test_two_grant_writers_cannot_commit_different_limits_at_the_same_revision(self):
+        job = self.store.submit_managed_job(self.managed_submission(), grant_id='grant-one', max_gpu_count=1)
+        def update(limit):
+            independent = Store(self.config.db_path)
+            try:
+                try:
+                    return independent.update_allocation_grant(job['id'], grant_id='grant-one', expected_revision=1, max_gpu_count=limit)
+                except S.StoreConflictError:
+                    return 'conflict'
+            finally:
+                independent.close()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(update, (2, 3)))
+        self.assertEqual(results.count('conflict'), 1)
+        self.assertEqual(self.store.get_allocation_authorization(job['id'])['grant']['revision'], 2)
+
+    def test_native_rpc_managed_submit_query_and_revision_update(self):
+        submission = self.managed_submission(); grant_id = str(uuid.uuid4())
+        path = self.root / 'allocation.sock'
+        server = _ThreadingUnixServer(path, self.coordinator.handle_api, os.getuid(), 262144)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            client = Client(path, timeout=3)
+            result = client.call('submit_managed', {'submission': submission, 'grant_id': grant_id, 'max_gpu_count': 1})
+            self.assertEqual(result['allocation']['mode'], 'external-v1')
+            self.assertEqual(result['allocation']['grant']['max_gpu_count'], 1)
+            status = client.call('allocation_status', {'submit_key': submission['submit_key']})
+            self.assertEqual(status['job_id'], result['job_id'])
+            changed = client.call('set_allocation_grant', {'submit_key': submission['submit_key'], 'grant_id': grant_id,
+                'expected_revision': 1, 'max_gpu_count': 2})
+            self.assertEqual(changed['grant']['revision'], 2)
+            self.coordinator._schedule()
+            self.assertEqual(len(self.store.list_leases(job_id=result['job_id'])), 2)
+            self.systemd.start.assert_not_called()
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_grant_query_remains_read_only_during_maintenance_and_mutations_are_blocked(self):
+        raw = self.managed_submission()
+        self.store.submit_managed_job(raw, grant_id='grant-one', max_gpu_count=1)
+        with patch.object(self.coordinator, '_require_release_open', side_effect=ApiError('MAINTENANCE','closed')):
+            self.assertEqual(self.coordinator.handle_api('allocation_status', {'submit_key': raw['submit_key']})['grant']['revision'], 1)
+            with self.assertRaises(ApiError) as error:
+                self.coordinator.handle_api('set_allocation_grant', {'submit_key': raw['submit_key'], 'grant_id': 'grant-one',
+                    'expected_revision': 1, 'max_gpu_count': 2})
+            self.assertEqual(error.exception.code, 'MAINTENANCE')
+        self.assertEqual(self.store.get_job_by_submit_key(raw['submit_key'])['allocation_authority'], 'external-v1')
 
 
 if __name__ == '__main__':

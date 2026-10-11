@@ -1320,11 +1320,24 @@ _SCHEMA_V13_TO_V14_DDL = (
       WHEN OLD.allocation_authority IS NOT NULL AND NEW.allocation_authority IS NOT OLD.allocation_authority
       BEGIN SELECT RAISE(ABORT,'allocation authority is immutable'); END""",
 )
-_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+_EXPECTED_SCHEMA_SIGNATURE_V14 = _build_expected_schema_signature((
     *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
     *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
     *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
     *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL, *_SCHEMA_V13_TO_V14_DDL,
+))
+
+_SCHEMA_V14_TO_V15_DDL = (
+    "ALTER TABLE allocation_grants ADD COLUMN initial_max_gpu_count INTEGER CHECK(initial_max_gpu_count BETWEEN 0 AND 4096)",
+    """CREATE TRIGGER allocation_grants_initial_immutable BEFORE UPDATE OF initial_max_gpu_count ON allocation_grants
+      WHEN NEW.initial_max_gpu_count IS NOT OLD.initial_max_gpu_count
+      BEGIN SELECT RAISE(ABORT,'initial allocation grant is immutable'); END""",
+)
+_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
+    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
+    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
+    *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL, *_SCHEMA_V13_TO_V14_DDL, *_SCHEMA_V14_TO_V15_DDL,
 ))
 
 
@@ -1539,6 +1552,9 @@ class Store:
                         version = 13
                     if version == 13:
                         self._migrate_v13_to_v14(connection)
+                        version = 14
+                    if version == 14:
+                        self._migrate_v14_to_v15(connection)
                     self._validate_schema(connection)
                     connection.commit()
                 except BaseException:
@@ -1610,7 +1626,7 @@ class Store:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if version == STORE_SCHEMA_VERSION:
+        if version in {14, STORE_SCHEMA_VERSION}:
             required_tables = _REQUIRED_TABLES
         elif version in {11, 12, 13}:
             required_tables = _REQUIRED_TABLES_V11_TO_V13
@@ -1934,6 +1950,14 @@ class Store:
             connection.execute(statement)
         connection.execute("UPDATE schema_meta SET schema_version=14 WHERE singleton=1")
         connection.execute("PRAGMA user_version=14")
+        self._validate_schema_version(connection, version=14, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V14)
+
+    def _migrate_v14_to_v15(self, connection: sqlite3.Connection) -> None:
+        self._validate_schema_version(connection, version=14, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V14)
+        for statement in _SCHEMA_V14_TO_V15_DDL:
+            connection.execute(statement)
+        connection.execute("UPDATE schema_meta SET schema_version=15 WHERE singleton=1")
+        connection.execute("PRAGMA user_version=15")
         self._validate_schema(connection)
 
     @staticmethod
@@ -2509,6 +2533,56 @@ class Store:
             return {'mode': 'native', 'grant': None}
         grant = None if row['grant_id'] is None else {key: row[key] for key in ('grant_id', 'revision', 'max_gpu_count')}
         return {'mode': row['allocation_authority'], 'grant': grant}
+
+    def submit_managed_job(self, submission: Mapping[str, Any], *, grant_id: str, max_gpu_count: int) -> dict[str, Any]:
+        """Atomically create external authority plus its initial permit; never adopt a native job."""
+        grant_id = _nonempty(grant_id, 'grant_id', maximum=256)
+        if not _plain_int(max_gpu_count) or not 0 <= max_gpu_count <= 4096:
+            raise ValueError('max_gpu_count must be an integer between 0 and 4096')
+        key = _nonempty(submission.get('submit_key'), 'submit_key', maximum=256)
+        try:
+            with self._transaction() as connection:
+                prior = connection.execute('SELECT id,allocation_authority FROM jobs WHERE submit_key=?', (key,)).fetchone()
+                if prior is not None and prior['allocation_authority'] != 'external-v1':
+                    raise StoreConflictError('native job cannot be adopted as externally managed')
+                job = self.submit_job(submission)
+                if max_gpu_count > job['gpu_count']:
+                    raise ValueError('grant exceeds the submitted GPU maximum')
+                if prior is not None:
+                    grant = connection.execute('SELECT * FROM allocation_grants WHERE job_id=?', (job['id'],)).fetchone()
+                    if grant is None or grant['grant_id'] != grant_id or grant['initial_max_gpu_count'] != max_gpu_count:
+                        raise StoreConflictError('initial allocation grant identity differs')
+                    return job
+                connection.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
+                connection.execute('INSERT INTO allocation_grants(job_id,grant_id,revision,max_gpu_count,initial_max_gpu_count) VALUES(?,?,1,?,?)',
+                                   (job['id'], grant_id, max_gpu_count, max_gpu_count))
+                return self.get_job(job['id'])
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError('managed submission grant identity conflicts') from exc
+
+    def update_allocation_grant(self, job_id: str, *, grant_id: str, expected_revision: int, max_gpu_count: int) -> dict[str, Any]:
+        if not _plain_int(expected_revision) or expected_revision < 1:
+            raise ValueError('expected_revision must be positive')
+        if not _plain_int(max_gpu_count) or not 0 <= max_gpu_count <= 4096:
+            raise ValueError('max_gpu_count must be an integer between 0 and 4096')
+        with self._transaction() as connection:
+            row = connection.execute('''SELECT g.*,j.gpu_count,j.allocation_authority FROM allocation_grants g
+                JOIN jobs j ON j.id=g.job_id WHERE g.job_id=?''', (job_id,)).fetchone()
+            if row is None or row['allocation_authority'] != 'external-v1' or row['grant_id'] != grant_id:
+                raise StoreConflictError('allocation grant identity differs')
+            if max_gpu_count > row['gpu_count']:
+                raise ValueError('grant exceeds the submitted GPU maximum')
+            current = {key: row[key] for key in ('grant_id', 'revision', 'max_gpu_count')}
+            if row['revision'] == expected_revision + 1 and row['max_gpu_count'] == max_gpu_count:
+                return current
+            if row['revision'] != expected_revision:
+                raise StoreConflictError('allocation grant revision changed')
+            if row['max_gpu_count'] == max_gpu_count:
+                return current
+            if max_gpu_count < len(self._allocated_gpu_uuids(connection, job_id)):
+                raise AllocationGrantError('grant cannot shrink below held or reserved GPUs')
+            connection.execute('UPDATE allocation_grants SET max_gpu_count=?,revision=revision+1 WHERE job_id=?', (max_gpu_count, job_id))
+            return {'grant_id': grant_id, 'revision': expected_revision + 1, 'max_gpu_count': max_gpu_count}
 
     def get_scale_up_receipt(self, submit_key: str, plan_id: str) -> dict[str, Any] | None:
         """One consistent observation; terminal plan state alone does not prove GPUs released."""
@@ -4430,6 +4504,11 @@ class Store:
         return normalized
 
     @staticmethod
+    def _allocated_gpu_uuids(connection: sqlite3.Connection, job_id: str) -> set[str]:
+        return {item[0] for item in connection.execute('''SELECT gpu_uuid FROM leases WHERE job_id=?
+            UNION SELECT gpu_uuid FROM scale_up_reservations WHERE job_id=?''', (job_id, job_id))}
+
+    @staticmethod
     def _require_allocation_grant(connection: sqlite3.Connection, job_id: str, gpu_uuids: Iterable[str]) -> None:
         """Writer-transaction guard: count the union of held, reserved and proposed cards."""
         row = connection.execute('''SELECT j.allocation_authority,g.max_gpu_count
@@ -4440,8 +4519,7 @@ class Store:
             return
         if row['max_gpu_count'] is None:
             raise AllocationGrantError('external allocation grant is missing')
-        held = {item[0] for item in connection.execute('''SELECT gpu_uuid FROM leases WHERE job_id=?
-            UNION SELECT gpu_uuid FROM scale_up_reservations WHERE job_id=?''', (job_id, job_id))}
+        held = Store._allocated_gpu_uuids(connection, job_id)
         if len(held.union(gpu_uuids)) > int(row['max_gpu_count']):
             raise AllocationGrantError('external allocation grant does not cover requested GPUs')
 
