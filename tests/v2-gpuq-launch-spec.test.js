@@ -75,3 +75,49 @@ test('node preparation rejects an illegal initial count or changed submit key be
   await assert.rejects(app.execute({...identity, gpuCount: 2}, {...raw, submit_key: randomUUID()}, pool), error => error.code === 'NODE_LAUNCH_IDENTITY_MISMATCH');
   assert.equal(db.prepare('SELECT count(*) n FROM v2_node_dispatch_bindings').get().n, 0);
 });
+
+test('private normalized launch material survives reopen and equivalent env ordering does not conflict', async t => {
+  const f = await fixture(t), path = join(f.cwd, 'node.sqlite'), db = new DatabaseSync(path);
+  try {
+    createNodeDispatchBindingsSchema(db);
+    const bindings = new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'});
+    const app = new PrepareNodeDispatch({bindings, launchSpec: new GpuqLaunchSpec({python: process.env.V2_PYTHON || 'python3'})});
+    const identity = {dispatchId: f.raw.submit_key, jobId: randomUUID(), accountId: 'alice', machineId: 'node-1', gpuCount: 1, requestHash: 'a'.repeat(64)};
+    const raw = {...f.raw, env: {Z: 'private-fixture-value', A: 'first'}};
+    const first = await app.execute(identity, raw, inventory);
+    const reference = {machineId: 'node-1', dispatchId: identity.dispatchId};
+    assert.deepEqual(await app.execute(identity, {...raw, env: {A: 'first', Z: 'private-fixture-value'}}, inventory), first);
+    const reopened = new DatabaseSync(path, {readOnly: true});
+    try {assert.deepEqual(new SqliteNodeDispatchBindings({database: reopened, machineId: 'node-1'}).launch(reference), first);}
+    finally {reopened.close();}
+    raw.argv.push('--mutated-later');
+    assert.deepEqual(bindings.launch(reference), first);
+    assert.equal(JSON.stringify(bindings.get(reference)).includes('private-fixture-value'), false);
+    assert.equal(db.prepare('SELECT count(*) n FROM v2_node_launch_specs').get().n, 1);
+  } finally {db.close();}
+});
+
+test('launch insertion failure rolls back both mapping and private spec; retry installs one pair', async t => {
+  const f = await fixture(t), db = new DatabaseSync(':memory:'); t.after(() => db.close()); createNodeDispatchBindingsSchema(db);
+  const bindings = new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'});
+  const app = new PrepareNodeDispatch({bindings, launchSpec: new GpuqLaunchSpec({python: process.env.V2_PYTHON || 'python3'})});
+  const identity = {dispatchId: f.raw.submit_key, jobId: randomUUID(), accountId: 'alice', machineId: 'node-1', gpuCount: 1, requestHash: 'a'.repeat(64)};
+  db.exec("CREATE TRIGGER fail_spec BEFORE INSERT ON v2_node_launch_specs BEGIN SELECT RAISE(ABORT,'launch spec failure'); END");
+  await assert.rejects(app.execute(identity, f.raw, inventory), /launch spec failure/);
+  assert.equal(db.prepare('SELECT count(*) n FROM v2_node_dispatch_bindings').get().n, 0);
+  assert.equal(db.prepare('SELECT count(*) n FROM v2_node_launch_specs').get().n, 0);
+  db.exec('DROP TRIGGER fail_spec');
+  const result = await app.execute(identity, f.raw, inventory);
+  assert.deepEqual(bindings.launch({machineId: 'node-1', dispatchId: identity.dispatchId}), result);
+});
+
+test('receipt-only mappings cannot be mistaken for an executable launch spec', async t => {
+  const f = await fixture(t), db = new DatabaseSync(':memory:'); t.after(() => db.close()); createNodeDispatchBindingsSchema(db);
+  const bindings = new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'});
+  const input = {dispatchId: f.raw.submit_key, jobId: randomUUID(), accountId: 'alice', machineId: 'node-1', gpuCount: 1,
+    nativeMaxGpus: 1, requestHash: 'a'.repeat(64), nativeDigest: 'b'.repeat(64), nativeOwner: f.raw.owner, nativeName: f.raw.name};
+  bindings.bind(input);
+  assert.equal(bindings.launch({machineId: 'node-1', dispatchId: input.dispatchId}), null);
+  assert.throws(() => bindings.launch({machineId: 'other', dispatchId: input.dispatchId}), error => error.code === 'NODE_DISPATCH_MACHINE_MISMATCH');
+  assert.equal(db.prepare('SELECT count(*) n FROM v2_node_launch_specs').get().n, 0);
+});

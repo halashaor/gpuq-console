@@ -24,7 +24,7 @@ def main():
             managed_gpu_uuids=tuple(value['gpuUuids']), max_request_bytes=value['maxRequestBytes'])
         counts = validate_resource_request(submission, len(value['gpuUuids']), managed_gpu_uuids=tuple(value['gpuUuids']))['allowed_gpu_counts']
         print(json.dumps({'result': {'submission': submission, 'nativeDigest': normalized_submission_digest(submission),
-                                     'allowedGpuCounts': list(counts)}}))
+                                     'allowedGpuCounts': list(counts)}}, sort_keys=True))
         return 0
     except ValueError:
         print(json.dumps({'error': {'code': 'INVALID_NATIVE_SUBMISSION'}}))
