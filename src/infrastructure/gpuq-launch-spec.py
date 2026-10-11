@@ -8,7 +8,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'gpuq'))
-from gpuq.submission import validate_submission
+from gpuq.submission import validate_submission, validate_resource_request
 from gpuq.store import normalized_submission_digest
 
 
@@ -22,7 +22,9 @@ def main():
             raise ValueError('Invalid launch envelope')
         submission = validate_submission(value['submission'], len(value['gpuUuids']),
             managed_gpu_uuids=tuple(value['gpuUuids']), max_request_bytes=value['maxRequestBytes'])
-        print(json.dumps({'result': {'submission': submission, 'nativeDigest': normalized_submission_digest(submission)}}))
+        counts = validate_resource_request(submission, len(value['gpuUuids']), managed_gpu_uuids=tuple(value['gpuUuids']))['allowed_gpu_counts']
+        print(json.dumps({'result': {'submission': submission, 'nativeDigest': normalized_submission_digest(submission),
+                                     'allowedGpuCounts': list(counts)}}))
         return 0
     except ValueError:
         print(json.dumps({'error': {'code': 'INVALID_NATIVE_SUBMISSION'}}))

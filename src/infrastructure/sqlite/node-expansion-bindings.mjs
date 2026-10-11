@@ -23,7 +23,8 @@ export class SqliteNodeExpansionBindings {
   bind(input) {
     const binding = nodeExpansionBinding(input), payload = JSON.stringify(binding);
     return transaction(this.database, () => {
-      this.#dispatch(binding.dispatchId);
+      const dispatch = this.#dispatch(binding.dispatchId);
+      if (binding.targetGpuCount > dispatch.nativeMaxGpus) throw new ApplicationError('INVALID_NODE_EXPANSION_BINDING');
       const row = this.database.prepare('SELECT binding_json FROM v2_node_expansion_bindings WHERE change_id=?').get(binding.changeId);
       if (row) {
         if (row.binding_json !== payload) throw new ApplicationError('NODE_EXPANSION_BINDING_CONFLICT');

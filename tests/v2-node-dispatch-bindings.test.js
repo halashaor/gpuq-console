@@ -32,7 +32,7 @@ async function fixture(t) {
   const db = new DatabaseSync(path); t.after(async () => {db.close(); await rm(folder, {recursive: true, force: true});});
   createNodeDispatchBindingsSchema(db);
   const binding = {dispatchId: randomUUID(), jobId: randomUUID(), accountId: 'alice', machineId: 'node-1', gpuCount: 2,
-    requestHash: 'a'.repeat(64), nativeDigest: 'b'.repeat(64), nativeOwner: 'runtime-alice', nativeName: 'training'};
+    nativeMaxGpus: 2, requestHash: 'a'.repeat(64), nativeDigest: 'b'.repeat(64), nativeOwner: 'runtime-alice', nativeName: 'training'};
   const bindings = new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'});
   const receipt = {job_id: 'J0123456789ab', submit_key: binding.dispatchId, submit_digest: binding.nativeDigest,
     owner: binding.nativeOwner, name: binding.nativeName, gpu_count: binding.gpuCount, state: 'PENDING'};
@@ -40,7 +40,8 @@ async function fixture(t) {
 }
 
 async function expansionFixture(t) {
-  const f = await fixture(t); f.bindings.bind(f.binding); createNodeExpansionBindingsSchema(f.db);
+  const f = await fixture(t); f.binding.nativeMaxGpus = 4; f.receipt.gpu_count = 4;
+  f.bindings.bind(f.binding); createNodeExpansionBindingsSchema(f.db);
   const expansion = {changeId: randomUUID(), dispatchId: f.binding.dispatchId, planId: 'S' + randomUUID(),
     sourceAttemptId: 'A' + randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
   const expansions = new SqliteNodeExpansionBindings({database: f.db, machineId: 'node-1'});
@@ -89,7 +90,7 @@ test('fixed node binding persists separately from the coordinator and is idempot
 
 test('dispatch identity, account, platform hash and native launch identity cannot be rebound', async t => {
   const f = await fixture(t); f.bindings.bind(f.binding);
-  for (const change of [{jobId: randomUUID()}, {accountId: 'bob'}, {gpuCount: 3}, {requestHash: 'c'.repeat(64)},
+  for (const change of [{jobId: randomUUID()}, {accountId: 'bob'}, {gpuCount: 3, nativeMaxGpus: 3}, {nativeMaxGpus: 4}, {requestHash: 'c'.repeat(64)},
     {nativeDigest: 'c'.repeat(64)}, {nativeOwner: 'other'}, {nativeName: 'other'}]) {
     assert.throws(() => f.bindings.bind({...f.binding, ...change}), hasCode('NODE_DISPATCH_BINDING_CONFLICT'));
   }
@@ -199,10 +200,11 @@ test('expansion-to-plan binding is immutable and one native plan cannot be assoc
   const f = await expansionFixture(t);
   assert.deepEqual(f.expansions.bind(f.expansion), f.expansion);
   assert.deepEqual(f.expansions.bind({...f.expansion}), f.expansion);
-  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {targetGpuCount: 8}, {fromGpuCount: 1}]) {
+  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {targetGpuCount: 3}, {fromGpuCount: 1}]) {
     assert.throws(() => f.expansions.bind({...f.expansion, ...change}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
   }
   assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID()}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
+  assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID(), planId: 'S-over-limit', targetGpuCount: 8}), hasCode('INVALID_NODE_EXPANSION_BINDING'));
   assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID(), dispatchId: randomUUID()}), hasCode('NODE_DISPATCH_BINDING_MISSING'));
   const db = new DatabaseSync(f.path, {readOnly: true});
   try {assert.deepEqual(new SqliteNodeExpansionBindings({database: db, machineId: 'node-1'}).get(f.expansionReference),
@@ -255,7 +257,7 @@ test('HTTP expansion recovery reaches coordinator accounting without treating fa
   dispatches.recordSendOutcome({dispatchId: permit.dispatch.dispatchId, senderToken: permit.senderToken, nodeJobId: node.receipt.job_id});
   const delivery = dispatches.delivery(permit.dispatch.dispatchId), changeId = randomUUID();
   f.claims.reserveExpansionForTask(jobId, {changeId, fromGpuCount: 2, targetGpuCount: 4}, f.now);
-  const binding = {...node.binding, dispatchId: delivery.dispatchId, jobId, accountId: delivery.accountId, requestHash: delivery.requestHash};
+  const binding = {...node.binding, dispatchId: delivery.dispatchId, jobId, accountId: delivery.accountId, requestHash: delivery.requestHash, nativeMaxGpus: 4};
   node.bindings.bind(binding);
   const expansion = {changeId, dispatchId: binding.dispatchId, planId: 'S' + randomUUID(), sourceAttemptId: 'A-source', fromGpuCount: 2, targetGpuCount: 4};
   new SqliteNodeExpansionBindings({database: node.db, machineId: 'node-1'}).bind(expansion);

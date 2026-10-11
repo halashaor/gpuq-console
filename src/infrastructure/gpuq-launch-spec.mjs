@@ -16,7 +16,9 @@ export class GpuqLaunchSpec {
     try {
       const {result} = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: this.timeoutMs, maxBytes: 2 * 1024 * 1024,
         input: {submission, gpuUuids, maxRequestBytes: this.maxRequestBytes}});
-      if (!result?.submission || typeof result.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(result.nativeDigest)) throw new Error('Invalid native build result');
+      if (!result?.submission || typeof result.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(result.nativeDigest)
+        || !Array.isArray(result.allowedGpuCounts) || !result.allowedGpuCounts.length
+        || result.allowedGpuCounts.some(count => !Number.isSafeInteger(count) || count < 1 || count > 4096)) throw new Error('Invalid native build result');
       return result;
     } catch (cause) {
       let code;

@@ -116,7 +116,7 @@ test('coordinator confirms the exact expansion through the independent node bind
   const f = await completionFixture(t), db = new DatabaseSync(':memory:'); t.after(() => db.close());
   createNodeDispatchBindingsSchema(db); createNodeExpansionBindingsSchema(db);
   const dispatch = {dispatchId: f.observed.dispatchId, jobId: f.jobId, accountId: 'alice', machineId: 'node-1', gpuCount: 2,
-    requestHash: f.observed.requestHash, nativeDigest: 'b'.repeat(64), nativeOwner: 'runtime-alice', nativeName: 'training'};
+    nativeMaxGpus: 8, requestHash: f.observed.requestHash, nativeDigest: 'b'.repeat(64), nativeOwner: 'runtime-alice', nativeName: 'training'};
   new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'}).bind(dispatch);
   const bindings = new SqliteNodeExpansionBindings({database: db, machineId: 'node-1'});
   bindings.bind({changeId: f.change.changeId, dispatchId: dispatch.dispatchId, planId: f.observed.planId,
