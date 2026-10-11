@@ -121,6 +121,10 @@ class StoreConflictError(StoreError):
     """An idempotency key, lease, or optimistic update conflicted."""
 
 
+class AllocationGrantError(StoreConflictError):
+    """An externally managed job lacks permission for this allocation."""
+
+
 class StoreNotFoundError(StoreError):
     """A requested durable object does not exist."""
 
@@ -3795,6 +3799,7 @@ class Store:
                     )
 
                 extras = sorted(target_set - source_set, key=lambda item: item[1])
+                self._require_allocation_grant(connection, job_id, (item[0] for item in normalized))
                 for gpu_uuid, gpu_index in extras:
                     lease = connection.execute(
                         """
@@ -4209,6 +4214,7 @@ class Store:
                         _json_load(plan["target_gpu_indices_json"]),
                     )
                 )
+                self._require_allocation_grant(connection, str(plan["job_id"]), (item[0] for item in targets))
                 for gpu_uuid, gpu_index in targets:
                     lease = connection.execute(
                         """
@@ -4423,6 +4429,22 @@ class Store:
             raise ValueError("duplicate GPU index in assignment")
         return normalized
 
+    @staticmethod
+    def _require_allocation_grant(connection: sqlite3.Connection, job_id: str, gpu_uuids: Iterable[str]) -> None:
+        """Writer-transaction guard: count the union of held, reserved and proposed cards."""
+        row = connection.execute('''SELECT j.allocation_authority,g.max_gpu_count
+            FROM jobs j LEFT JOIN allocation_grants g ON g.job_id=j.id WHERE j.id=?''', (job_id,)).fetchone()
+        if row is None:
+            raise StoreNotFoundError(f'job not found: {job_id}')
+        if row['allocation_authority'] is None:
+            return
+        if row['max_gpu_count'] is None:
+            raise AllocationGrantError('external allocation grant is missing')
+        held = {item[0] for item in connection.execute('''SELECT gpu_uuid FROM leases WHERE job_id=?
+            UNION SELECT gpu_uuid FROM scale_up_reservations WHERE job_id=?''', (job_id, job_id))}
+        if len(held.union(gpu_uuids)) > int(row['max_gpu_count']):
+            raise AllocationGrantError('external allocation grant does not cover requested GPUs')
+
     def acquire_leases(
         self,
         job_id: str,
@@ -4466,6 +4488,7 @@ class Store:
                 subject="lease assignment",
             )
             self._require_pinned_assignment(attempt, [item[0] for item in normalized])
+            self._require_allocation_grant(connection, job_id, (item[0] for item in normalized))
             recorded_uuids = _json_load(attempt["gpu_uuids_json"])
             recorded_indices = _json_load(attempt["gpu_indices_json"])
             if not isinstance(recorded_uuids, list) or not isinstance(

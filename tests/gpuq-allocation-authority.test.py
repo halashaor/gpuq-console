@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sqlite3
 import unittest
+import uuid
 from unittest.mock import patch
 
 loader = importlib.util.spec_from_file_location('authority_fixture', Path(__file__).with_name('gpuq-priority.test.py'))
@@ -15,6 +16,13 @@ class AllocationAuthoritySchema(unittest.TestCase):
     setUp = F.SchedulerPriorityTests.setUp
     submit = F.SchedulerPriorityTests.submit
     snapshot = F.SchedulerPriorityTests.snapshot
+
+    def attempt(self, job, indices=(0,)):
+        attempt_id = 'A' + uuid.uuid4().hex
+        control, log = self.coordinator._create_attempt_paths(job['id'], attempt_id)
+        return self.store.create_attempt(job['id'], attempt_id=attempt_id, gpu_uuids=[f'GPU-{i}' for i in indices],
+            gpu_indices=list(indices), unit_name='gpuq-' + attempt_id.lower(), unit_token=attempt_id,
+            boot_id='test-boot', control_dir=str(control), log_path=str(log))
 
     def old_database(self):
         job = self.submit()
@@ -86,6 +94,38 @@ class AllocationAuthoritySchema(unittest.TestCase):
             self.assertEqual(reopened.check_integrity()['schema_version'], 14)
         finally:
             reopened.close()
+
+    def test_missing_or_zero_grants_block_leases_but_release_remains_available(self):
+        job = self.submit(); attempt = self.attempt(job)
+        db = self.store._get_connection()
+        db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
+        with self.assertRaisesRegex(S.StoreConflictError, 'grant is missing'):
+            self.store.acquire_leases(job['id'], attempt['id'], {'GPU-0': 0})
+        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,0)', (job['id'], 'grant-one'))
+        with self.assertRaisesRegex(S.StoreConflictError, 'does not cover'):
+            self.store.acquire_leases(job['id'], attempt['id'], {'GPU-0': 0})
+        self.assertEqual(self.store.list_leases(), [])
+        db.execute('UPDATE allocation_grants SET max_gpu_count=1 WHERE job_id=?', (job['id'],))
+        self.store.acquire_leases(job['id'], attempt['id'], {'GPU-0': 0})
+        db.execute('UPDATE allocation_grants SET max_gpu_count=0 WHERE job_id=?', (job['id'],))
+        self.store.release_leases(attempt_id=attempt['id'])
+        self.assertEqual(self.store.list_leases(), [])
+
+    def test_authority_checks_total_distinct_cards_across_attempts_not_only_the_new_request(self):
+        job = self.submit(gpu_count=2, min_gpu_count=1, elastic_gpu_count=True)
+        first = self.attempt(job, (0,))
+        db = self.store._get_connection()
+        db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?", (job['id'],))
+        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,1)', (job['id'], 'grant-one'))
+        self.store.acquire_leases(job['id'], first['id'], {'GPU-0': 0})
+        self.store.update_attempt(first['id'], state='EXITED_FAILURE')
+        second = self.attempt(job, (1,))
+        with self.assertRaisesRegex(S.StoreConflictError, 'does not cover'):
+            self.store.acquire_leases(job['id'], second['id'], {'GPU-1': 1})
+        self.assertEqual(len(self.store.list_leases()), 1)
+        self.store.release_leases(attempt_id=first['id'])
+        self.store.acquire_leases(job['id'], second['id'], {'GPU-1': 1})
+        self.assertEqual(self.store.list_leases()[0]['gpu_uuid'], 'GPU-1')
 
 
 if __name__ == '__main__':

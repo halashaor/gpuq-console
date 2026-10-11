@@ -11,6 +11,7 @@ spec=importlib.util.spec_from_file_location('elastic_native_fixture',ROOT/'tests
 F=importlib.util.module_from_spec(spec);spec.loader.exec_module(F)
 from gpuq.constants import AttemptState
 from gpuq.rpc import ApiError
+from gpuq.store import StoreConflictError
 
 class NativeExpansion(unittest.TestCase):
     setUp=F.SchedulerPriorityTests.setUp
@@ -99,5 +100,43 @@ class NativeExpansion(unittest.TestCase):
             with self.subTest(arguments=arguments),self.assertRaises(ApiError) as error:
                 self.coordinator.handle_api('scale_up_receipt',arguments)
             self.assertEqual(error.exception.code,'BAD_REQUEST')
+
+    def test_external_grant_is_required_before_reserving_extra_scale_gpus(self):
+        job,attempt=self.running_elastic();db=self.store._get_connection()
+        db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?",(job['id'],))
+        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,2)',(job['id'],'grant-scale'))
+        with self.assertRaisesRegex(StoreConflictError,'does not cover'):
+            self.coordinator._schedule_scale_ups()
+        self.assertEqual(self.store.list_scale_up_plans(),[])
+        self.assertEqual(self.store.list_scale_up_reservations(),[])
+        self.assertEqual(len(self.store.list_leases()),2)
+        self.assertEqual(self.store.list_actions(),[])
+        db.execute('UPDATE allocation_grants SET max_gpu_count=4 WHERE job_id=?',(job['id'],))
+        self.coordinator._schedule_scale_ups()
+        plan=self.store.get_active_scale_up_plan(job['id'])
+        self.assertEqual(plan['target_gpu_count'],4)
+        self.assertEqual(len(self.store.list_scale_up_reservations()),2)
+        db.execute('UPDATE allocation_grants SET max_gpu_count=0 WHERE job_id=?',(job['id'],))
+        self.assertEqual(self.store.release_scale_up_reservations(plan['id']),2)
+
+    def test_revoked_grant_prevents_reservation_to_lease_conversion_with_atomic_rollback(self):
+        job,attempt=self.running_elastic();self.coordinator._schedule_scale_ups()
+        current=self.store.get_attempt(attempt['id']);ack={'checkpoint_path':str(self.root/'checkpoint.pt'),'exit_code':75}
+        self.coordinator._record_checkpoint_ack(current,ack,expected_state=AttemptState.SAVE_REQUESTED)
+        self.store.update_attempt(attempt['id'],state='DRAINING',exit_code=75)
+        self.coordinator._finalize_scale_attempt(self.store.get_attempt(attempt['id']),self.store.get_job(job['id']),
+                                               self.store.get_active_scale_up_plan(job['id']),ack)
+        plan=self.store.get_active_scale_up_plan(job['id']);db=self.store._get_connection()
+        db.execute("UPDATE jobs SET allocation_authority='external-v1' WHERE id=?",(job['id'],))
+        db.execute('INSERT INTO allocation_grants VALUES(?,?,1,2)',(job['id'],'grant-scale'))
+        before='\n'.join(db.iterdump())
+        with self.assertRaisesRegex(StoreConflictError,'does not cover'):
+            self.store.reserve_full_scale_up_target(plan['id'])
+        self.assertEqual('\n'.join(db.iterdump()),before)
+        with self.assertRaisesRegex(StoreConflictError,'does not cover'):
+            self.coordinator._plan_scale_up_restart(self.store.get_job(job['id']),plan)
+        self.assertEqual('\n'.join(db.iterdump()),before)
+        self.assertEqual(len(self.store.list_scale_up_reservations()),4)
+        self.assertEqual(self.store.list_leases(),[])
 
 if __name__=='__main__':unittest.main()

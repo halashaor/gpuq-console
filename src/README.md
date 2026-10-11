@@ -68,6 +68,7 @@
 - `PrepareNodeDispatch`：内部可信原生命令先经 GpuqLaunchSpec 完整校验，再检查本次初始卡数属于原生合法集合并绑定派发。gpuCount 是平台初始选择，nativeMaxGpus 是原生任务上限，回执按后者核对但仍返回前者；不冻结弹性配置，也不授予未经额度许可的扩卡。尚未构造容器命令或发送任务。
 - 节点启动规格与映射同事务保存；规范化输出按键排序，等价环境字段顺序不造成冲突。`launch` 仅供节点执行器恢复私有参数，回执查询仍只读映射；只有映射、没有启动规格时返回缺失，不重建或猜命令。新表需显式 schema 安装，没有公开 host argv／env 接口。
 - 原生 schema14 为资源许可准备持久 authority 标记与 allocation_grants 表；旧任务默认 native，不自动纳管。external-v1 且缺许可与明确零卡许可均可单独识别，标记不能降回 native。旧版 schema13 读取规则拒绝新库；目前只有格式／读取基础，尚未开放纳管提交或执行许可限制，不能部署后宣称已受额度保护。
+- 原生资源写事务已检查受管任务许可，按该任务现有租约、扩卡预留与拟新增 GPU 的并集计数；缺许可或超限抛出专门 AllocationGrantError。普通任务保持原行为，释放不受该限制。调度层等待处理、启动动作前重核及许可写协议仍待完成，不可单独上线纳管任务。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
