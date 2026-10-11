@@ -98,6 +98,33 @@ class SubmissionReceiptTests(unittest.TestCase):
                 self.assertEqual(digest, normalized_submission_digest({**clean, 'env': {'A': 'first', 'Z': 'last'}}))
                 self.assertNotEqual(digest, normalized_submission_digest({**clean, 'argv': [*clean['argv'], '--different']}))
 
+    def test_scale_receipt_is_available_over_the_real_read_only_native_socket(self):
+        job = self.submit(gpu_count=4, min_gpu_count=1, elastic_gpu_count=True, auto_scale_up=True,
+            target_global_batch_size=64, per_device_micro_batch_size=4, checkpoint_capability='epoch-v1',
+            restart_policy='on-preempt', yield_policy='save')
+        attempt_id = 'A' + uuid.uuid4().hex
+        control, log = self.coordinator._create_attempt_paths(job['id'], attempt_id)
+        attempt = self.store.create_attempt(job['id'], attempt_id=attempt_id, state='RUNNING',
+            gpu_uuids=['GPU-0'], gpu_indices=[0], unit_name='gpuq-' + attempt_id.lower(), unit_token='attempt:' + attempt_id,
+            boot_id='test-boot', invocation_id='a' * 32, control_dir=str(control), log_path=str(log))
+        self.store.acquire_leases(job['id'], attempt_id, {'GPU-0': 0})
+        self.store.update_attempt(attempt_id, state='RUNNING')
+        self.store.update_job(job['id'], state='RUNNING')
+        attempt = self.store.get_attempt(attempt_id)
+        job = self.store.get_job(job['id'])
+        plan = self.coordinator._plan_scale_up(job, attempt, [self.coordinator._snapshot[1]])
+        path = self.root / 'scale-receipt.sock'
+        server = _ThreadingUnixServer(path, self.coordinator.handle_api, os.getuid(), 262144)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            receipt = Client(path, timeout=3).call('scale_up_receipt', {'submit_key': job['submit_key'], 'plan_id': plan['id']})
+            self.assertEqual(receipt['target_gpu_count'], 2)
+            self.assertEqual(receipt['job_leased_gpu_count'], 1)
+            self.assertEqual(receipt['plan_reserved_gpu_count'], 1)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.assertFalse(thread.is_alive())
+
 
 if __name__ == '__main__':
     unittest.main()

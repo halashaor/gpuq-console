@@ -2462,6 +2462,24 @@ class Store:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def get_scale_up_receipt(self, submit_key: str, plan_id: str) -> dict[str, Any] | None:
+        """One consistent observation; terminal plan state alone does not prove GPUs released."""
+        key = _nonempty(submit_key, 'submit_key', maximum=256)
+        plan = _nonempty(plan_id, 'plan_id', maximum=256)
+        with self._read_connection() as connection:
+            row = connection.execute('''
+                SELECT j.id job_id,j.submit_key,j.submit_digest,p.id plan_id,p.state plan_state,p.version plan_version,
+                  p.from_gpu_count,p.target_gpu_count,p.source_attempt_id,p.successor_attempt_id,
+                  source.state source_attempt_state,successor.state successor_attempt_state,
+                  (SELECT count(*) FROM scale_up_reservations r WHERE r.plan_id=p.id) plan_reserved_gpu_count,
+                  (SELECT count(*) FROM scale_up_reservations r WHERE r.job_id=j.id) job_reserved_gpu_count,
+                  (SELECT count(*) FROM leases l WHERE l.job_id=j.id) job_leased_gpu_count
+                FROM jobs j JOIN scale_up_plans p ON p.job_id=j.id
+                LEFT JOIN attempts source ON source.id=p.source_attempt_id
+                LEFT JOIN attempts successor ON successor.id=p.successor_attempt_id
+                WHERE j.submit_key=? AND p.id=?''', (key, plan)).fetchone()
+        return None if row is None else dict(row)
+
     def list_jobs(
         self,
         *,
