@@ -62,6 +62,7 @@
 - `GpuqLaunchSpec`：仅供节点可信启动构建器，将原生参数交给现有 validate_submission 规范化并复用 Store 摘要算法；检查 cwd／可执行路径和资源规则，但不执行命令、开数据库或提交任务。返回的 argv/env 是私有执行材料，不能直接暴露为公开接口或让用户指定宿主运行器。
 - `ReserveTaskExpansion`：复用原生合法卡数校验后，在同事务预留额外额度并记录唯一扩卡编号。claims 的 gpu_count 保留初始派发选择，reserved_gpu_count 表示当前计费预留；未知扩卡不自动返还或叠加另一扩卡。尚未接原生 scale plan、确认／回退结算或公开接口，预留回执不是物理扩卡证明。
 - 原生 `scale_up_receipt`：按 submit_key 与精确 plan_id 一次 SQL 读取计划／前后尝试状态及当前租约、预留数量。失败计划仍可能有新尝试持卡，不能只看终态就退还额度；该只读回执没有释放资源或创建扩卡计划的作用。
+- `SqliteNodeExpansionBindings`／`LookupNodeExpansion`：固定平台 changeId 与原派发、原生 planId、来源尝试、前后卡数的关系，一计划不能绑定两个扩卡编号。复用原生回执桥精确查询，不找“最新计划”、不补建关联或退款；该映射写入仍由后续可信扩卡握手完成。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

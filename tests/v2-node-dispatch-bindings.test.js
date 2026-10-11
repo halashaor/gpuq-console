@@ -17,6 +17,8 @@ import {DISPATCH_RECEIPT_ROUTE} from '../src/contracts/dispatch-receipt.mjs';
 import {dispatchFixture} from './helpers/v2-dispatch-fixture.mjs';
 import {SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
 import {ReconcileTrainingDispatch} from '../src/application/reconcile-training-dispatch.mjs';
+import {createNodeExpansionBindingsSchema, SqliteNodeExpansionBindings} from '../src/infrastructure/sqlite/node-expansion-bindings.mjs';
+import {LookupNodeExpansion} from '../src/application/lookup-node-expansion.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
@@ -29,6 +31,18 @@ async function fixture(t) {
   const receipt = {job_id: 'J0123456789ab', submit_key: binding.dispatchId, submit_digest: binding.nativeDigest,
     owner: binding.nativeOwner, name: binding.nativeName, gpu_count: binding.gpuCount, state: 'PENDING'};
   return {db, path, binding, bindings, receipt, reference: {machineId: 'node-1', dispatchId: binding.dispatchId}};
+}
+
+async function expansionFixture(t) {
+  const f = await fixture(t); f.bindings.bind(f.binding); createNodeExpansionBindingsSchema(f.db);
+  const expansion = {changeId: randomUUID(), dispatchId: f.binding.dispatchId, planId: 'S' + randomUUID(),
+    sourceAttemptId: 'A' + randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
+  const expansions = new SqliteNodeExpansionBindings({database: f.db, machineId: 'node-1'});
+  const scaleReceipt = {job_id: f.receipt.job_id, submit_key: f.binding.dispatchId, submit_digest: f.binding.nativeDigest,
+    plan_id: expansion.planId, plan_state: 'FAILED', plan_version: 3, from_gpu_count: 2, target_gpu_count: 4,
+    source_attempt_id: expansion.sourceAttemptId, successor_attempt_id: 'A-successor', source_attempt_state: 'PREEMPTED',
+    successor_attempt_state: 'PLANNED', plan_reserved_gpu_count: 0, job_reserved_gpu_count: 0, job_leased_gpu_count: 4};
+  return {...f, expansion, expansions, scaleReceipt, expansionReference: {machineId: 'node-1', changeId: expansion.changeId}};
 }
 
 async function nativeServer(t, f) {
@@ -173,4 +187,52 @@ test('HTTP receipt reader rejects a different dispatch and does not confuse malf
     const reader = new HttpDispatchReceipts({nodes: [{machineId: 'node-1', origin, credential}]});
     await assert.rejects(reader.lookup(node.reference), hasCode('DISPATCH_NODE_UNAVAILABLE'));
   }
+});
+
+test('expansion-to-plan binding is immutable and one native plan cannot be associated with two changes', async t => {
+  const f = await expansionFixture(t);
+  assert.deepEqual(f.expansions.bind(f.expansion), f.expansion);
+  assert.deepEqual(f.expansions.bind({...f.expansion}), f.expansion);
+  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {targetGpuCount: 8}, {fromGpuCount: 1}]) {
+    assert.throws(() => f.expansions.bind({...f.expansion, ...change}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
+  }
+  assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID()}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
+  assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID(), dispatchId: randomUUID()}), hasCode('NODE_DISPATCH_BINDING_MISSING'));
+  const db = new DatabaseSync(f.path, {readOnly: true});
+  try {assert.deepEqual(new SqliteNodeExpansionBindings({database: db, machineId: 'node-1'}).get(f.expansionReference),
+    {dispatch: f.binding, expansion: f.expansion});} finally {db.close();}
+});
+
+test('expansion lookup requires the exact plan and source attempt, not the latest plan of a job', async t => {
+  const f = await expansionFixture(t); let calls = 0;
+  const native = {async lookupScale(input) {calls++; assert.deepEqual(input, {submitKey: f.binding.dispatchId, planId: f.expansion.planId}); return f.scaleReceipt;}};
+  const app = new LookupNodeExpansion({bindings: f.expansions, native});
+  assert.equal(await app.execute(f.expansionReference), null); assert.equal(calls, 0);
+  f.expansions.bind(f.expansion);
+  const changes = f.db.prepare('SELECT total_changes() n').get().n;
+  const result = await app.execute(f.expansionReference);
+  assert.equal(result.planState, 'FAILED'); assert.equal(result.jobLeasedGpuCount, 4);
+  assert.equal(result.changeId, f.expansion.changeId); assert.equal(result.requestHash, f.binding.requestHash);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  for (const change of [{plan_id: 'S-newest'}, {source_attempt_id: 'A-other'}, {target_gpu_count: 8},
+    {from_gpu_count: 1}, {submit_digest: f.binding.requestHash}, {job_leased_gpu_count: -1}]) {
+    native.lookupScale = async () => ({...f.scaleReceipt, ...change});
+    await assert.rejects(app.execute(f.expansionReference), hasCode('NATIVE_EXPANSION_RECEIPT_MISMATCH'));
+  }
+});
+
+test('expansion observation traverses the native Python socket bridge without creating or releasing plans', async t => {
+  const f = await expansionFixture(t); f.expansions.bind(f.expansion);
+  const {socketPath, state} = await nativeServer(t, f); state.value = f.scaleReceipt;
+  const app = new LookupNodeExpansion({bindings: f.expansions,
+    native: new GpuqReceiptReader({socketPath, python: process.env.V2_PYTHON || 'python3'})});
+  const result = await app.execute(f.expansionReference);
+  assert.equal(result.planState, 'FAILED'); assert.equal(result.jobLeasedGpuCount, 4);
+  assert.equal(state.requests[0].op, 'scale_up_receipt');
+  assert.deepEqual(state.requests[0].args, {submit_key: f.binding.dispatchId, plan_id: f.expansion.planId});
+  state.value = null;
+  assert.equal(await app.execute(f.expansionReference), null);
+  state.rejected = true;
+  await assert.rejects(app.execute(f.expansionReference), hasCode('GPUQ_RECEIPT_UNAVAILABLE'));
+  assert.equal(state.requests.length, 3);
 });
