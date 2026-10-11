@@ -308,6 +308,14 @@ class AllocationAuthoritySchema(unittest.TestCase):
             server.shutdown(); server.server_close(); thread.join(5)
         self.assertFalse(thread.is_alive())
 
+    def test_reserved_grant_ceiling_is_not_the_actual_elastic_attempt_size(self):
+        job = self.store.submit_managed_job(self.managed_submission(), grant_id='grant-one', max_gpu_count=2)
+        self.snapshot(occupied=(0, 1, 2))
+        self.coordinator._schedule()
+        self.assertEqual(len(self.store.list_leases(job_id=job['id'])), 1)
+        self.assertEqual(self.store.get_allocation_authorization(job['id'])['grant']['max_gpu_count'], 2)
+        self.assertEqual(self.store.get_job(job['id'])['gpu_count'], 4)
+
     def test_grant_query_remains_read_only_during_maintenance_and_mutations_are_blocked(self):
         raw = self.managed_submission()
         self.store.submit_managed_job(raw, grant_id='grant-one', max_gpu_count=1)
