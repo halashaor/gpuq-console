@@ -5,6 +5,7 @@ import {ApplicationError} from '../../domain/errors.mjs';
 import {computeBalance} from '../../domain/compute-balance.mjs';
 import {SqliteTaskAuthority} from './task-authority.mjs';
 import {requireTaskPlacement} from '../../domain/task-placement.mjs';
+import {expansionCompletion} from '../../domain/expansion-confirmation.mjs';
 
 export function createComputeClaimsSchema(database) {
   transaction(database, () => database.exec(`
@@ -23,7 +24,8 @@ export function createComputeClaimsSchema(database) {
       change_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES v2_compute_claims(job_id),
       from_gpu_count INTEGER NOT NULL CHECK(from_gpu_count>=1),
       target_gpu_count INTEGER NOT NULL CHECK(target_gpu_count>from_gpu_count AND target_gpu_count<=4096),
-      state TEXT NOT NULL CHECK(state IN ('RESERVED','APPLIED','RELEASED')), created_at_ms INTEGER NOT NULL
+      state TEXT NOT NULL CHECK(state IN ('RESERVED','APPLIED','RELEASED')), created_at_ms INTEGER NOT NULL,
+      resolution_json TEXT
     );
     CREATE UNIQUE INDEX v2_compute_expansion_pending ON v2_compute_expansions(job_id) WHERE state='RESERVED';
   `));
@@ -157,9 +159,48 @@ export class SqliteComputeClaims {
       if (claim.reserved_gpu_count !== fromGpuCount) throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
       const balance = this.#balance({id: context.accountId}, claim.machine_id, context.accountRole);
       if (targetGpuCount - fromGpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
-      db.prepare("INSERT INTO v2_compute_expansions VALUES(?,?,?,?,'RESERVED',?)").run(changeId, jobId, fromGpuCount, targetGpuCount, now);
+      db.prepare("INSERT INTO v2_compute_expansions(change_id,job_id,from_gpu_count,target_gpu_count,state,created_at_ms) VALUES(?,?,?,?,'RESERVED',?)")
+        .run(changeId, jobId, fromGpuCount, targetGpuCount, now);
       db.prepare('UPDATE v2_compute_claims SET reserved_gpu_count=? WHERE job_id=?').run(targetGpuCount, jobId);
       return expansionReceipt(db.prepare('SELECT * FROM v2_compute_expansions WHERE change_id=?').get(changeId));
+    });
+  }
+
+  #expansion(changeId) {
+    return this.database.prepare(`SELECT e.*,c.machine_id,c.reserved_gpu_count,c.state claim_state,
+      d.dispatch_id,d.node_job_id,d.state dispatch_state,j.account_id,j.payload_hash
+      FROM v2_compute_expansions e JOIN v2_compute_claims c ON c.job_id=e.job_id
+      JOIN v2_training_dispatches d ON d.job_id=e.job_id JOIN v2_training_requests j ON j.job_id=e.job_id
+      WHERE e.change_id=?`).get(changeId);
+  }
+
+  #expansionView(row) {
+    return {...expansionReceipt(row), machineId: row.machine_id, dispatchId: row.dispatch_id,
+      nodeJobId: row.node_job_id, accountId: row.account_id, requestHash: row.payload_hash};
+  }
+
+  /** Internal reconciliation read; account revocation must not erase prior outcomes. */
+  expansion(changeId) {
+    return readTransaction(this.database, () => {
+      const row = this.#expansion(changeId);
+      return row ? this.#expansionView(row) : null;
+    });
+  }
+
+  confirmExpansionApplied(observed) {
+    return transaction(this.database, () => {
+      const row = this.#expansion(observed.changeId);
+      if (!row) throw new ApplicationError('COMPUTE_EXPANSION_NOT_FOUND');
+      const proof = expansionCompletion(this.#expansionView(row), observed);
+      if (row.state === 'APPLIED') {
+        if (row.resolution_json !== JSON.stringify(proof)) throw new ApplicationError('COMPUTE_EXPANSION_CONFLICT');
+        return this.#expansionView(row);
+      }
+      if (row.state !== 'RESERVED' || row.claim_state !== 'HELD' || row.reserved_gpu_count !== row.target_gpu_count
+        || row.dispatch_state !== 'ACCEPTED') throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
+      this.database.prepare("UPDATE v2_compute_expansions SET state='APPLIED',resolution_json=? WHERE change_id=?")
+        .run(JSON.stringify(proof), observed.changeId);
+      return this.#expansionView(this.#expansion(observed.changeId));
     });
   }
 }

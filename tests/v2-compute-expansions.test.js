@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {DatabaseSync} from 'node:sqlite';
 import {computeFixture} from './helpers/v2-compute-fixture.mjs';
 import {trainingSubmission} from './helpers/v2-training-submission.mjs';
 import {createTrainingQueueSchema, SqliteTrainingQueue} from '../src/infrastructure/sqlite/training-queue.mjs';
@@ -11,6 +12,10 @@ import {SqliteTaskAuthority} from '../src/infrastructure/sqlite/task-authority.m
 import {ValidateTrainingResources} from '../src/application/validate-training-resources.mjs';
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
 import {ReserveTaskExpansion} from '../src/application/reserve-task-expansion.mjs';
+import {ReconcileTaskExpansion} from '../src/application/reconcile-task-expansion.mjs';
+import {createNodeDispatchBindingsSchema, SqliteNodeDispatchBindings} from '../src/infrastructure/sqlite/node-dispatch-bindings.mjs';
+import {createNodeExpansionBindingsSchema, SqliteNodeExpansionBindings} from '../src/infrastructure/sqlite/node-expansion-bindings.mjs';
+import {LookupNodeExpansion} from '../src/application/lookup-node-expansion.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
@@ -32,6 +37,101 @@ async function fixture(t) {
     validator: new ValidateTrainingResources({policy: new GpuqPolicy({python: process.env.V2_PYTHON || 'python3'})})});
   return {...f, app, addJob, dispatches};
 }
+
+async function completionFixture(t) {
+  const f = await fixture(t), jobId = f.addJob();
+  const change = {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
+  await f.app.execute(jobId, change);
+  const observed = {...f.claims.expansion(change.changeId), planId: 'S' + randomUUID(), sourceAttemptId: 'A-source',
+    successorAttemptId: 'A-successor', planState: 'COMPLETED', planVersion: 4,
+    sourceAttemptState: 'PREEMPTED', successorAttemptState: 'RUNNING', planReservedGpuCount: 0,
+    jobReservedGpuCount: 0, jobLeasedGpuCount: 4};
+  return {...f, jobId, change, observed};
+}
+
+test('matched completed expansion becomes applied without refund and permits the next quota proposal', async t => {
+  const f = await completionFixture(t);
+  const result = f.claims.confirmExpansionApplied(f.observed);
+  assert.equal(result.state, 'APPLIED');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+  f.database.exec('UPDATE v2_compute_policies SET total_cards=8; UPDATE v2_machine_grants SET max_cards=8');
+  await f.app.execute(f.jobId, {changeId: randomUUID(), fromGpuCount: 4, targetGpuCount: 8});
+  assert.deepEqual(f.claims.confirmExpansionApplied(f.observed), result);
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 8);
+  assert.equal(f.dispatches.getForTask(f.jobId).gpuCount, 2);
+});
+
+test('identity mismatches or incomplete success cannot settle an expansion', async t => {
+  const f = await completionFixture(t);
+  for (const change of [{jobId: randomUUID()}, {dispatchId: randomUUID()}, {nodeJobId: 'Jother'}, {accountId: 'other'},
+    {machineId: 'other'}, {requestHash: '0'.repeat(64)}, {fromGpuCount: 1}, {targetGpuCount: 8}]) {
+    assert.throws(() => f.claims.confirmExpansionApplied({...f.observed, ...change}), hasCode('EXPANSION_OBSERVATION_MISMATCH'));
+  }
+  for (const change of [{planState: 'FAILED'}, {successorAttemptId: null}, {planVersion: -1}]) {
+    assert.throws(() => f.claims.confirmExpansionApplied({...f.observed, ...change}), hasCode('EXPANSION_NOT_CONFIRMED'));
+  }
+  assert.equal(f.claims.expansion(f.change.changeId).state, 'RESERVED');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+});
+
+test('completion proof cannot be rebound to a different plan or attempt', async t => {
+  const f = await completionFixture(t); f.claims.confirmExpansionApplied(f.observed);
+  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {successorAttemptId: 'A-other'}]) {
+    assert.throws(() => f.claims.confirmExpansionApplied({...f.observed, ...change}), hasCode('COMPUTE_EXPANSION_CONFLICT'));
+  }
+});
+
+test('late applied evidence can be recorded after account disable without authorizing new expansion', async t => {
+  const f = await completionFixture(t); f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+  assert.equal(f.claims.confirmExpansionApplied(f.observed).state, 'APPLIED');
+  await assert.rejects(f.app.execute(f.jobId, {changeId: randomUUID(), fromGpuCount: 4, targetGpuCount: 8}), hasCode('TASK_NOT_AUTHORIZED'));
+});
+
+test('reconciliation keeps failed or absent plans unconfirmed and never refunds their extra quota', async t => {
+  const f = await completionFixture(t); let reply = null;
+  const nodes = {async lookup(reference) {
+    assert.deepEqual(reference, {machineId: 'node-1', changeId: f.change.changeId}); return reply;
+  }};
+  const app = new ReconcileTaskExpansion({claims: f.claims, nodes});
+  assert.equal((await app.execute(f.change.changeId)).kind, 'unconfirmed');
+  reply = {...f.observed, planState: 'FAILED', jobLeasedGpuCount: 4};
+  assert.equal((await app.execute(f.change.changeId)).kind, 'unconfirmed');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+  reply = f.observed;
+  const result = await app.execute(f.change.changeId);
+  assert.equal(result.kind, 'applied');
+  nodes.lookup = async () => {assert.fail('Applied expansion must not be queried again');};
+  assert.deepEqual(await app.execute(f.change.changeId), result);
+});
+
+test('applied-state write failure preserves reservation and quota', async t => {
+  const f = await completionFixture(t);
+  f.database.exec("CREATE TRIGGER fail_apply BEFORE UPDATE ON v2_compute_expansions BEGIN SELECT RAISE(ABORT,'apply failure'); END");
+  assert.throws(() => f.claims.confirmExpansionApplied(f.observed), /apply failure/);
+  assert.equal(f.claims.expansion(f.change.changeId).state, 'RESERVED');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+});
+
+test('coordinator confirms the exact expansion through the independent node binding projection', async t => {
+  const f = await completionFixture(t), db = new DatabaseSync(':memory:'); t.after(() => db.close());
+  createNodeDispatchBindingsSchema(db); createNodeExpansionBindingsSchema(db);
+  const dispatch = {dispatchId: f.observed.dispatchId, jobId: f.jobId, accountId: 'alice', machineId: 'node-1', gpuCount: 2,
+    requestHash: f.observed.requestHash, nativeDigest: 'b'.repeat(64), nativeOwner: 'runtime-alice', nativeName: 'training'};
+  new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'}).bind(dispatch);
+  const bindings = new SqliteNodeExpansionBindings({database: db, machineId: 'node-1'});
+  bindings.bind({changeId: f.change.changeId, dispatchId: dispatch.dispatchId, planId: f.observed.planId,
+    sourceAttemptId: f.observed.sourceAttemptId, fromGpuCount: 2, targetGpuCount: 4});
+  const lookup = new LookupNodeExpansion({bindings, native: {async lookupScale() {
+    return {job_id: f.observed.nodeJobId, submit_key: dispatch.dispatchId, submit_digest: dispatch.nativeDigest,
+      plan_id: f.observed.planId, plan_state: 'COMPLETED', plan_version: 4, from_gpu_count: 2, target_gpu_count: 4,
+      source_attempt_id: f.observed.sourceAttemptId, successor_attempt_id: f.observed.successorAttemptId,
+      source_attempt_state: 'PREEMPTED', successor_attempt_state: 'RUNNING', plan_reserved_gpu_count: 0,
+      job_reserved_gpu_count: 0, job_leased_gpu_count: 4};
+  }}});
+  const app = new ReconcileTaskExpansion({claims: f.claims, nodes: {lookup: reference => lookup.execute(reference)}});
+  assert.equal((await app.execute(f.change.changeId)).kind, 'applied');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+});
 
 test('expansion reserves only the extra quota and never rewrites the immutable initial dispatch count', async t => {
   const f = await fixture(t), jobId = f.addJob(), original = f.dispatches.getForTask(jobId);
