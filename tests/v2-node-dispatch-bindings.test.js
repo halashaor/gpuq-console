@@ -15,10 +15,16 @@ import {assembleDispatchReceipt} from '../src/bootstrap/dispatch-receipt.mjs';
 import {HttpDispatchReceipts} from '../src/infrastructure/http-dispatch-receipts.mjs';
 import {DISPATCH_RECEIPT_ROUTE} from '../src/contracts/dispatch-receipt.mjs';
 import {dispatchFixture} from './helpers/v2-dispatch-fixture.mjs';
-import {SqliteTrainingDispatches} from '../src/infrastructure/sqlite/training-dispatches.mjs';
+import {SqliteTrainingDispatches, createTrainingDispatchSchema} from '../src/infrastructure/sqlite/training-dispatches.mjs';
 import {ReconcileTrainingDispatch} from '../src/application/reconcile-training-dispatch.mjs';
 import {createNodeExpansionBindingsSchema, SqliteNodeExpansionBindings} from '../src/infrastructure/sqlite/node-expansion-bindings.mjs';
 import {LookupNodeExpansion} from '../src/application/lookup-node-expansion.mjs';
+import {HttpExpansionReceipts} from '../src/infrastructure/http-expansion-receipts.mjs';
+import {EXPANSION_RECEIPT_ROUTE} from '../src/contracts/expansion-receipt.mjs';
+import {computeFixture} from './helpers/v2-compute-fixture.mjs';
+import {trainingSubmission} from './helpers/v2-training-submission.mjs';
+import {createTrainingQueueSchema, SqliteTrainingQueue} from '../src/infrastructure/sqlite/training-queue.mjs';
+import {ReconcileTaskExpansion} from '../src/application/reconcile-task-expansion.mjs';
 
 const hasCode = code => error => error.code === code;
 async function fixture(t) {
@@ -235,4 +241,64 @@ test('expansion observation traverses the native Python socket bridge without cr
   state.rejected = true;
   await assert.rejects(app.execute(f.expansionReference), hasCode('GPUQ_RECEIPT_UNAVAILABLE'));
   assert.equal(state.requests.length, 3);
+});
+
+test('HTTP expansion recovery reaches coordinator accounting without treating failed plans as refunds', async t => {
+  const f = await computeFixture(t), node = await fixture(t); f.ready();
+  createTrainingQueueSchema(f.database); createTrainingDispatchSchema(f.database); createNodeExpansionBindingsSchema(node.db);
+  const input = trainingSubmission(); input.resources.autoScaleUp = true; input.resources.batch = {globalBatchSize: 64, microBatchSize: 4};
+  input.scheduling = {...input.scheduling, checkpoint: 'epoch-v1', restart: 'on-preempt', yieldPolicy: 'save'};
+  const jobId = new SqliteTrainingQueue({database: f.database}).enqueue(f.actor, input, f.now).request.jobId;
+  const dispatches = new SqliteTrainingDispatches({database: f.database});
+  dispatches.prepareForTask(jobId, {machineId: 'node-1', gpuCount: 2}, f.now);
+  const permit = dispatches.beginSend(jobId, f.now);
+  dispatches.recordSendOutcome({dispatchId: permit.dispatch.dispatchId, senderToken: permit.senderToken, nodeJobId: node.receipt.job_id});
+  const delivery = dispatches.delivery(permit.dispatch.dispatchId), changeId = randomUUID();
+  f.claims.reserveExpansionForTask(jobId, {changeId, fromGpuCount: 2, targetGpuCount: 4}, f.now);
+  const binding = {...node.binding, dispatchId: delivery.dispatchId, jobId, accountId: delivery.accountId, requestHash: delivery.requestHash};
+  node.bindings.bind(binding);
+  const expansion = {changeId, dispatchId: binding.dispatchId, planId: 'S' + randomUUID(), sourceAttemptId: 'A-source', fromGpuCount: 2, targetGpuCount: 4};
+  new SqliteNodeExpansionBindings({database: node.db, machineId: 'node-1'}).bind(expansion);
+  const native = await nativeServer(t, node);
+  const receipt = {job_id: delivery.nodeJobId, submit_key: binding.dispatchId, submit_digest: binding.nativeDigest,
+    plan_id: expansion.planId, plan_state: 'FAILED', plan_version: 3, from_gpu_count: 2, target_gpu_count: 4,
+    source_attempt_id: expansion.sourceAttemptId, successor_attempt_id: 'A-successor', source_attempt_state: 'PREEMPTED',
+    successor_attempt_state: 'PLANNED', plan_reserved_gpu_count: 0, job_reserved_gpu_count: 0, job_leased_gpu_count: 4};
+  native.state.value = receipt;
+  const origin = await serve(t, assembleDispatchReceipt({database: node.db, machineId: 'node-1', credential,
+    socketPath: native.socketPath, python: process.env.V2_PYTHON || 'python3', reportError() {}}));
+  const app = new ReconcileTaskExpansion({claims: f.claims, nodes: new HttpExpansionReceipts({nodes: [{machineId: 'node-1', origin, credential}]})});
+  assert.equal((await app.execute(changeId)).kind, 'unconfirmed');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+  native.state.value = {...receipt, source_attempt_id: 'A-wrong'};
+  await assert.rejects(app.execute(changeId), hasCode('EXPANSION_NODE_UNAVAILABLE'));
+  assert.equal(f.claims.expansion(changeId).state, 'RESERVED');
+  native.state.value = {...receipt, plan_state: 'COMPLETED', plan_version: 4, successor_attempt_state: 'RUNNING'};
+  assert.equal((await app.execute(changeId)).kind, 'applied');
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+  assert.equal(native.state.requests.length, 3);
+  assert.ok(native.state.requests.every(row => row.op === 'scale_up_receipt'));
+});
+
+test('expansion endpoint refuses authentication, machine and proof injection errors before native queries', async t => {
+  const f = await expansionFixture(t), native = await nativeServer(t, f);
+  const origin = await serve(t, assembleDispatchReceipt({database: f.db, machineId: 'node-1', credential, socketPath: native.socketPath, reportError() {}}));
+  const post = (body, token) => fetch(origin + EXPANSION_RECEIPT_ROUTE, {method: 'POST', headers: {
+    'Content-Type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {}),
+  }, body: JSON.stringify(body)});
+  assert.equal((await post(f.expansionReference)).status, 401);
+  assert.equal((await post({...f.expansionReference, machineId: 'other'}, credential)).status, 409);
+  assert.equal((await post({...f.expansionReference, planState: 'COMPLETED'}, credential)).status, 400);
+  assert.equal((await post({...f.expansionReference, planId: 'other'}, credential)).status, 400);
+  assert.equal(native.state.requests.length, 0);
+});
+
+test('HTTP expansion reader rejects wrong identity and malformed counts instead of reporting absence', async t => {
+  const f = await expansionFixture(t); f.expansions.bind(f.expansion);
+  const valid = await new LookupNodeExpansion({bindings: f.expansions, native: {async lookupScale() {return f.scaleReceipt;}}}).execute(f.expansionReference);
+  for (const bad of [{...valid, changeId: randomUUID()}, {...valid, machineId: 'other'}, {...valid, jobLeasedGpuCount: -1},
+    {...valid, successorAttemptState: undefined}, {}]) {
+    const origin = await serve(t, (req, res) => res.end(JSON.stringify({result: bad})));
+    await assert.rejects(new HttpExpansionReceipts({nodes: [{machineId: 'node-1', origin, credential}]}).lookup(f.expansionReference), hasCode('EXPANSION_NODE_UNAVAILABLE'));
+  }
 });

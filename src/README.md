@@ -64,6 +64,7 @@
 - 原生 `scale_up_receipt`：按 submit_key 与精确 plan_id 一次 SQL 读取计划／前后尝试状态及当前租约、预留数量。失败计划仍可能有新尝试持卡，不能只看终态就退还额度；该只读回执没有释放资源或创建扩卡计划的作用。
 - `SqliteNodeExpansionBindings`／`LookupNodeExpansion`：固定平台 changeId 与原派发、原生 planId、来源尝试、前后卡数的关系，一计划不能绑定两个扩卡编号。复用原生回执桥精确查询，不找“最新计划”、不补建关联或退款；该映射写入仍由后续可信扩卡握手完成。
 - `ReconcileTaskExpansion`：按原机器／changeId 核对完整身份，只将带完整前后尝试关联的 COMPLETED 回执记为 APPLIED；保留额度，之后才允许新的扩卡预留。失败、空查询和未知不构成退款依据，历史回执不能改绑或覆盖后续额度。远端扩卡查询及失败释放协议仍待接入。
+- `HttpExpansionReceipts`：复用节点回执服务和传输，固定 expansion-receipt 路由只接受 machineId／changeId；与派发回执共用节点认证及原生查询器。严格区分 null、错误回包和不可用，不开放结果写入或原生计划 ID 覆盖入口；失败额度释放协议仍待实现。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
