@@ -16,7 +16,9 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
 class ProtocolError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 def encode_request(
@@ -110,7 +112,7 @@ class Client:
         ):
             raise ProtocolError(
                 "FORBIDDEN: peer uid is not allowed; run native GPUQ as its "
-                "configured service user (host ROOT is a different identity)"
+                "configured service user (host ROOT is a different identity)", code='FORBIDDEN'
             )
         if not isinstance(response, dict) or response.get("request_id") != request_id:
             raise ProtocolError("daemon response does not match request")
@@ -120,5 +122,5 @@ class Client:
                 raise ProtocolError("daemon returned an unspecified error")
             code = error.get("code", "ERROR")
             message = error.get("message", "request failed")
-            raise ProtocolError(f"{code}: {message}")
+            raise ProtocolError(f"{code}: {message}", code=code if isinstance(code, str) else None)
         return response.get("result")

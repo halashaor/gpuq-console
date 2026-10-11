@@ -8,7 +8,7 @@ export async function jsonProcess({program, args, input, timeoutMs = 5000, maxBy
   if (Buffer.byteLength(body) > maxBytes) throw Object.assign(new Error('Native request too large'), {code: 'NATIVE_REQUEST_TOO_LARGE'});
   if (process.platform === 'win32') throw new Error('Native query supervision requires POSIX process groups');
   return new Promise((resolve, reject) => {
-    // Only fixed, trusted query helpers belong here. This is not a job runner:
+    // Only fixed, trusted short-lived helpers belong here. This is not a job runner:
     // descendants must stay in this group and may not outlive the query.
     const child = spawn(program, args, {detached: true, stdio: ['pipe', 'pipe', 'pipe']});
     const output = [];

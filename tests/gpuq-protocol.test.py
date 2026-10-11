@@ -62,6 +62,15 @@ def replying_socket(response):
 
 
 class NativeProtocolIdentity(unittest.TestCase):
+    def test_explicit_error_code_is_available_without_changing_the_error_message(self):
+        with replying_socket(lambda request: {'request_id': request['request_id'], 'ok': False,
+                             'error': {'code': 'ALLOCATION_CONFLICT', 'message': 'revision changed'}}) as (client, requests):
+            with self.assertRaises(ProtocolError) as error:
+                client.call('set_allocation_grant', {})
+            self.assertEqual(error.exception.code, 'ALLOCATION_CONFLICT')
+            self.assertEqual(str(error.exception), 'ALLOCATION_CONFLICT: revision changed')
+            self.assertEqual(len(requests), 1)
+
     def test_exact_pre_request_uid_denial_is_explicit_and_not_retried(self):
         with replying_socket(DENIAL) as (client, requests):
             with self.assertRaisesRegex(ProtocolError, '^FORBIDDEN: peer uid is not allowed;.*service user'):
